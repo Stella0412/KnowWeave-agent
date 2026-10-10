@@ -18,3 +18,25 @@ def test_settings_from_env(monkeypatch):
     assert s.llm_model == "qwen2.5"
     assert s.llm_api_key == "sk-test"
     assert s.token_budget == 2048
+
+
+def test_settings_mysql_defaults():
+    s = Settings(_env_file=None)
+    assert s.mysql_host == "127.0.0.1"
+    assert s.mysql_port == 3306
+    assert s.mysql_user == "root"
+    assert s.mysql_db == "knowweave"
+    assert s.tool_timeout == 5.0
+    assert s.tool_retries == 1
+
+
+def test_settings_mysql_from_env(monkeypatch):
+    monkeypatch.setenv("MYSQL_HOST", "10.0.0.9")
+    monkeypatch.setenv("MYSQL_PORT", "3307")
+    monkeypatch.setenv("MYSQL_PASSWORD", "p@ss")
+    monkeypatch.setenv("TOOL_TIMEOUT", "8")
+    s = Settings(_env_file=None)
+    assert s.mysql_host == "10.0.0.9"
+    assert s.mysql_port == 3307
+    assert s.mysql_password == "p@ss"
+    assert s.tool_timeout == 8.0
