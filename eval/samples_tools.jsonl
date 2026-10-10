@@ -1,0 +1,6 @@
+{"text":"订单 1001 的物流到哪了","tool":"query_logistics"}
+{"text":"订单 1001 现在什么状态","tool":"query_order"}
+{"text":"这款猫粮多少钱","tool":"query_product"}
+{"text":"退货政策是什么","tool":"query_faq"}
+{"text":"商品坏了我要投诉，帮我转人工","tool":"create_ticket"}
+{"text":"邮费是多少","tool":"query_faq"}
