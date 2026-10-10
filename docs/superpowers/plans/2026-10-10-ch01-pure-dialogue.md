@@ -427,7 +427,9 @@ def build_chat_model(settings: Settings) -> ChatOpenAI:
 
 def build_structured_model(settings: Settings, schema):
     model = build_chat_model(settings)
-    return model.with_structured_output(schema)
+    # DeepSeek 不支持 json_schema response_format（langchain-openai 默认 method），
+    # 改用 function_calling（tools/tool_choice），GPT/Claude/Ollama 通用。见 SDD Ruling 4。
+    return model.with_structured_output(schema, method="function_calling")
 ```
 
 - [ ] **Step 4: 运行测试确认通过**
