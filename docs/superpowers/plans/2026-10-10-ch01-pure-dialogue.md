@@ -141,6 +141,7 @@ TOKEN_BUDGET=4096
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["."]
 ```
 
 - [ ] **Step 8: 提交**
