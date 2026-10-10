@@ -123,7 +123,7 @@ knowweave/
   docs/superpowers/specs/2026-10-10-ch01-pure-dialogue-design.md
 ```
 
-依赖（用 uv 管理虚拟环境）：`fastapi`、`uvicorn[standard]`、`sse-starlette`、`langchain-core`、`langchain-openai`、`pydantic`、`pydantic-settings`、`tiktoken`；开发：`pytest`、`pytest-asyncio`、`httpx`。具体包名与 API 在实现前用 Context7 核验。
+依赖（用 uv 管理虚拟环境）：`fastapi`（含内置 `fastapi.sse`，**不用 `sse-starlette`**）、`uvicorn[standard]`、`langchain-core`、`langchain-openai`、`pydantic`、`pydantic-settings`、`python-dotenv`、`tiktoken`；开发：`pytest`、`pytest-asyncio`、`httpx`。具体包名与 API 在实现前用 Context7 核验。
 
 ## 11. 验收标准
 
