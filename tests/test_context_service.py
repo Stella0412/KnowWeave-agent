@@ -3,14 +3,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app.services.context_service import ContextStore
 
 
-def test_append_and_get():
-    store = ContextStore()
-    store.append("s1", HumanMessage(content="你好"))
-    store.append("s1", AIMessage(content="你好，请问有什么可以帮您？"))
-    assert len(store.get_messages("s1")) == 2
-    assert store.get_messages("nope") == []
-
-
 def test_count_tokens_monotonic():
     store = ContextStore()
     short = store.count_tokens([HumanMessage(content="你好")])
@@ -22,11 +14,17 @@ def test_count_tokens_monotonic():
 def test_trim_drops_oldest_keeps_newest():
     store = ContextStore(token_budget=60)
     system = SystemMessage(content="你是客服")
-    for i in range(10):
-        store.append("s1", AIMessage(content="这是第" + str(i) + "条很长的历史消息内容"))
-    store.append("s1", HumanMessage(content="最新问题"))
-    history = store.trim_history("s1", system)
+    history = [AIMessage(content="第" + str(i) + "条很长的历史消息内容") for i in range(10)]
+    history.append(HumanMessage(content="最新问题"))
+    trimmed = store.trim(system, history)
     # 最新一条用户消息必须保留
-    assert history[-1].content == "最新问题"
-    # system + history 不超预算
-    assert store.count_tokens([system] + history) <= 60
+    assert trimmed[-1].content == "最新问题"
+    # system + trimmed 不超预算
+    assert store.count_tokens([system] + trimmed) <= 60
+
+
+def test_trim_does_not_mutate_input():
+    store = ContextStore(token_budget=1000)
+    history = [HumanMessage(content="你好")]
+    store.trim(SystemMessage(content="sys"), history)
+    assert len(history) == 1
