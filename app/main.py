@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from app.config import Settings, settings
+from app.db.base import Base
+from app.db.engine import engine
 from app.routers import chat, extract
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -19,6 +21,11 @@ def validate_config(s: Settings | None = None) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_config()
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        print(f"[警告] 数据库不可用，跳过建表: {e}")
     yield
 
 
