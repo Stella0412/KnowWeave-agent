@@ -184,6 +184,17 @@
   }
   .composer button:hover { opacity: .88; }
   .composer button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .tool-badge {
+    display: inline-block;
+    margin: 0 0 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: #fff1e6;
+    color: #ff6f3c;
+    border: 1px solid #ffd7bf;
+    font-size: 12px;
+  }
 </style>
 </head>
 <body>
@@ -223,7 +234,7 @@
     });
   }
 
-  let sessionId = uuid();
+  let sessionId = null;
   let sending = false;
 
   function scrollToBottom() {
@@ -332,7 +343,7 @@
   }
 
   function reset() {
-    sessionId = uuid();
+    sessionId = null;
     chatEl.innerHTML = '';
     addAssistantMessage('您好，我是知序客服知序～有什么可以帮您的吗？订单、物流、售后问题都可以问我哦。');
   }
@@ -348,6 +359,14 @@
     switch (ev.type) {
       case 'session':
         sessionId = ev.session_id;
+        break;
+      case 'tool_status':
+        if (!ctx.badge) {
+          ctx.badge = document.createElement('div');
+          ctx.badge.className = 'tool-badge';
+          bubbleEl.insertBefore(ctx.badge, bubbleEl.firstChild);
+        }
+        ctx.badge.textContent = '🔧 调用了 ' + ev.name;
         break;
       case 'token':
         ctx.raw += ev.content;
@@ -368,7 +387,13 @@
   function finalizeAssistant(bubbleEl, ctx) {
     if (ctx.finished) return;
     ctx.finished = true;
-    bubbleEl.innerHTML = '<div class="body">' + renderMarkdown(ctx.raw) + '</div>';
+    const badge = ctx.badge || bubbleEl.querySelector('.tool-badge');
+    bubbleEl.innerHTML = '';
+    if (badge) bubbleEl.appendChild(badge);
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.innerHTML = renderMarkdown(ctx.raw);
+    bubbleEl.appendChild(body);
     scrollToBottom();
   }
 
