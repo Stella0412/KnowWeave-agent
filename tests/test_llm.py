@@ -7,3 +7,12 @@ def test_build_chat_model_uses_settings():
     m = build_chat_model(s)
     assert m.model_name == "m"
     assert m.openai_api_base == "http://x/v1"
+
+
+def test_build_structured_model_returns_runnable():
+    from app.core.llm import build_structured_model
+    from app.schemas.extract import AfterSaleExtraction
+
+    s = Settings(llm_base_url="http://x/v1", llm_api_key="k", llm_model="m")
+    r = build_structured_model(s, AfterSaleExtraction)
+    assert hasattr(r, "ainvoke")
