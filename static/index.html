@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知序 · 智能客服</title>
+<style>
+  :root {
+    --brand: #ff6f3c;
+    --brand-2: #ff9a5a;
+    --bg: #fff7f0;
+    --panel: #ffffff;
+    --ink: #3a3a3a;
+    --muted: #9b9b9b;
+    --user-bubble: linear-gradient(135deg, #ff6f3c, #ff8a5a);
+    --assistant-bubble: #ffffff;
+    --border: #f0e6dd;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+
+  .app {
+    max-width: 760px;
+    height: 100vh;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    box-shadow: 0 0 40px rgba(255, 111, 60, 0.08);
+  }
+
+  /* 顶栏 */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: linear-gradient(135deg, #ff6f3c, #ff8a5a);
+    color: #fff;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .avatar {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.25);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px;
+  }
+  .brand h1 { font-size: 18px; font-weight: 600; }
+  .status { font-size: 12px; opacity: 0.92; display: flex; align-items: center; gap: 5px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #6df08a; display: inline-block;
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse { 0%,100% {opacity:1} 50% {opacity:.35} }
+
+  .btn-new {
+    border: 1px solid rgba(255,255,255,0.6);
+    background: rgba(255,255,255,0.14);
+    color: #fff;
+    padding: 7px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .btn-new:hover { background: rgba(255,255,255,0.28); }
+
+  /* 消息区 */
+  .chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg { display: flex; align-items: flex-end; gap: 10px; }
+  .msg .avatar {
+    width: 34px; height: 34px; flex: none;
+    border-radius: 50%;
+    background: #fff2ea;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+  }
+  .bubble {
+    max-width: 72%;
+    padding: 11px 15px;
+    border-radius: 16px;
+    font-size: 15px;
+    line-height: 1.6;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .msg.user { justify-content: flex-end; }
+  .msg.user .bubble {
+    background: var(--user-bubble);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant .bubble {
+    background: var(--assistant-bubble);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.03);
+  }
+
+  /* 客服 Markdown 渲染样式 */
+  .msg.assistant .body p { margin: 0 0 8px; }
+  .msg.assistant .body p:last-child { margin-bottom: 0; }
+  .msg.assistant .body ul,
+  .msg.assistant .body ol { margin: 4px 0 8px; padding-left: 20px; }
+  .msg.assistant .body li { margin: 2px 0; }
+  .msg.assistant .body strong { font-weight: 600; }
+  .msg.assistant .body em { font-style: italic; }
+  .msg.assistant .body code {
+    background: #f5efe9;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 0.9em;
+  }
+  .msg.assistant .body h2, .msg.assistant .body h3, .msg.assistant .body h4,
+  .msg.assistant .body h5, .msg.assistant .body h6 {
+    margin: 10px 0 4px; font-weight: 600;
+  }
+  .msg.assistant .body h2 { font-size: 1.25em; }
+  .msg.assistant .body h3 { font-size: 1.1em; }
+  .msg.assistant .body h4 { font-size: 1em; }
+  .bubble .error { color: #d93a3a; margin-top: 6px; }
+
+  /* 流式光标 */
+  .cursor {
+    display: inline-block;
+    width: 2px; height: 1em;
+    margin-left: 2px;
+    vertical-align: -2px;
+    background: var(--brand);
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { to { visibility: hidden; } }
+
+  /* 输入区 */
+  .composer {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 14px 18px;
+    border-top: 1px solid var(--border);
+    background: #fff;
+  }
+  .composer textarea {
+    flex: 1;
+    resize: none;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    padding: 11px 16px;
+    font-size: 15px;
+    font-family: inherit;
+    line-height: 1.5;
+    max-height: 120px;
+    outline: none;
+    background: #fbf7f3;
+  }
+  .composer textarea:focus { border-color: var(--brand-2); background: #fff; }
+  .composer button {
+    border: none;
+    background: var(--brand);
+    color: #fff;
+    padding: 12px 22px;
+    border-radius: 22px;
+    font-size: 15px;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  .composer button:hover { opacity: .88; }
+  .composer button:disabled { opacity: .5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="avatar">🐱</div>
+        <div>
+          <h1>知序智能客服</h1>
+          <p class="status"><span class="dot"></span>在线 · 纯对话体验版</p>
+        </div>
+      </div>
+      <button class="btn-new" id="btnNew">新对话</button>
+    </header>
+
+    <main class="chat" id="chat"></main>
+
+    <footer class="composer">
+      <textarea id="input" rows="1" placeholder="请输入您的问题，回车发送（Shift+回车换行）"></textarea>
+      <button id="send">发送</button>
+    </footer>
+  </div>
+
+<script>
+(() => {
+  const chatEl = document.getElementById('chat');
+  const inputEl = document.getElementById('input');
+  const sendEl = document.getElementById('send');
+  const btnNew = document.getElementById('btnNew');
+
+  function uuid() {
+    if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    // 非安全上下文（如局域网 IP 直接访问）的兜底
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  let sessionId = uuid();
+  let sending = false;
+
+  function scrollToBottom() {
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  // ---- Markdown 渲染（客服回复用，覆盖模型常输出的 **粗体** / - 列表 / 1. 列表 / # 标题 / 行内代码）----
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function inlineMd(s) {
+    let out = escapeHtml(s);
+    out = out.replace(/`([^`]+)`/g, '<code>$1</code>');                 // 行内代码（先处理）
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');      // 加粗
+    out = out.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');  // 斜体（单 *）
+    return out;
+  }
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+    let html = '';
+    let list = null; // 'ul' | 'ol' | null
+    let para = [];
+
+    const closeList = () => { if (list) { html += '</' + list + '>'; list = null; } };
+    const flushPara = () => {
+      if (para.length) { html += '<p>' + para.map(inlineMd).join('<br>') + '</p>'; para = []; }
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd();
+      const head = line.match(/^\s*(#{1,6})\s+(.*)$/);
+      const ul = line.match(/^\s*[-*]\s+(.*)$/);
+      const ol = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+
+      if (!line.trim()) { flushPara(); closeList(); continue; }
+
+      if (head) {
+        flushPara(); closeList();
+        const lv = Math.min(head[1].length + 1, 6); // # → h2
+        html += '<h' + lv + '>' + inlineMd(head[2]) + '</h' + lv + '>';
+        continue;
+      }
+      if (ul) {
+        flushPara();
+        if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; }
+        html += '<li>' + inlineMd(ul[1]) + '</li>';
+        continue;
+      }
+      if (ol) {
+        flushPara();
+        if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; }
+        html += '<li>' + inlineMd(ol[2]) + '</li>';
+        continue;
+      }
+      closeList();
+      para.push(line);
+    }
+    flushPara();
+    closeList();
+    return html;
+  }
+
+  // ---- 消息构造 ----
+  function addUserMessage(text) {
+    const msg = document.createElement('div');
+    msg.className = 'msg user';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text; // 用户消息按纯文本（自动转义）
+    msg.appendChild(bubble);
+    chatEl.appendChild(msg);
+    scrollToBottom();
+    return msg;
+  }
+
+  // 客服消息；返回 { msg, bubble }，供流式追加/收尾
+  function addAssistantMessage(markdown) {
+    const msg = document.createElement('div');
+    msg.className = 'msg assistant';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = '🐱';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = '<div class="body">' + renderMarkdown(markdown || '') + '</div>';
+    msg.appendChild(avatar);
+    msg.appendChild(bubble);
+    chatEl.appendChild(msg);
+    scrollToBottom();
+    return { msg, bubble };
+  }
+
+  function setSending(v) {
+    sending = v;
+    inputEl.disabled = v;
+    sendEl.disabled = v;
+    if (!v) inputEl.focus();
+  }
+
+  function autoGrow() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  }
+
+  function reset() {
+    sessionId = uuid();
+    chatEl.innerHTML = '';
+    addAssistantMessage('您好，我是知序客服知序～有什么可以帮您的吗？订单、物流、售后问题都可以问我哦。');
+  }
+
+  // 解析单行 SSE 事件（形如 `data: {...}`）
+  function handleLine(line, bubbleEl, ctx) {
+    const s = line.trim();
+    if (!s.startsWith('data:')) return;
+    const payload = s.slice(5).trim();
+    if (!payload) return;
+    let ev;
+    try { ev = JSON.parse(payload); } catch { return; }
+    switch (ev.type) {
+      case 'session':
+        sessionId = ev.session_id;
+        break;
+      case 'token':
+        ctx.raw += ev.content;
+        ctx.stream.textContent += ev.content; // 流式阶段纯文本逐字
+        scrollToBottom();
+        break;
+      case 'error':
+        finalizeAssistant(bubbleEl, ctx);
+        appendError(bubbleEl, ev.message);
+        break;
+      case 'done':
+        finalizeAssistant(bubbleEl, ctx);
+        break;
+    }
+  }
+
+  // 收尾：把流式纯文本换成 Markdown 渲染后的 HTML
+  function finalizeAssistant(bubbleEl, ctx) {
+    if (ctx.finished) return;
+    ctx.finished = true;
+    bubbleEl.innerHTML = '<div class="body">' + renderMarkdown(ctx.raw) + '</div>';
+    scrollToBottom();
+  }
+
+  function appendError(bubbleEl, message) {
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = '[出错了] ' + message;
+    bubbleEl.appendChild(err);
+    scrollToBottom();
+  }
+
+  async function send() {
+    const text = inputEl.value.trim();
+    if (!text || sending) return;
+
+    addUserMessage(text);
+    inputEl.value = '';
+    autoGrow();
+
+    const { bubble } = addAssistantMessage('');
+    const stream = document.createElement('span');
+    stream.className = 'stream';
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    bubble.innerHTML = '';
+    bubble.appendChild(stream);
+    bubble.appendChild(cursor);
+
+    const ctx = { raw: '', stream, finished: false };
+    setSending(true);
+
+    try {
+      const resp = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, message: text }),
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error('请求失败（HTTP ' + resp.status + '）');
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      const flush = () => {
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) handleLine(line, bubble, ctx);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        flush();
+      }
+      buf += decoder.decode(); // 冲刷解码器残留
+      flush();
+      if (buf.trim()) handleLine(buf.trim(), bubble, ctx); // 无换行结尾的最后一行
+      if (!ctx.finished) finalizeAssistant(bubble, ctx);   // 确保收尾
+    } catch (e) {
+      finalizeAssistant(bubble, ctx);
+      appendError(bubble, e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  sendEl.addEventListener('click', send);
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+  inputEl.addEventListener('input', autoGrow);
+  btnNew.addEventListener('click', reset);
+
+  reset();
+})();
+</script>
+</body>
+</html>
