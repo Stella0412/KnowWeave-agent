@@ -588,13 +588,22 @@ from app.services.extract_service import ExtractService
 
 router = APIRouter(prefix="/extract", tags=["extract"])
 
-_extract_service = ExtractService(build_structured_model(settings, AfterSaleExtraction))
+# 懒实例化：避免 import 时用空 key 构造 ChatOpenAI 报错（Risk A）。
+# 单例缓存在模块级，首次请求时才真正构建。
+_extract_service: ExtractService | None = None
+
+
+def _get_extract_service() -> ExtractService:
+    global _extract_service
+    if _extract_service is None:
+        _extract_service = ExtractService(build_structured_model(settings, AfterSaleExtraction))
+    return _extract_service
 
 
 @router.post("", response_model=AfterSaleExtraction)
 async def extract(req: ExtractRequest):
     try:
-        return await _extract_service.extract(req.text)
+        return await _get_extract_service().extract(req.text)
     except Exception as e:  # 上游模型报错 → 502，不静默
         raise HTTPException(status_code=502, detail=f"模型调用失败: {e}")
 ```
@@ -802,12 +811,21 @@ from app.services.context_service import ContextStore
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-_chat_service = ChatService(build_chat_model(settings), ContextStore(settings.token_budget))
+# 懒实例化：避免 import 时用空 key 构造 ChatOpenAI 报错（Risk A）。
+# ContextStore 是多轮会话状态的单例，必须跨请求复用，故首次请求时构建并缓存。
+_chat_service: ChatService | None = None
+
+
+def _get_chat_service() -> ChatService:
+    global _chat_service
+    if _chat_service is None:
+        _chat_service = ChatService(build_chat_model(settings), ContextStore(settings.token_budget))
+    return _chat_service
 
 
 @router.post("", response_class=EventSourceResponse)
 async def chat(req: ChatRequest) -> AsyncIterable[ServerSentEvent]:
-    async for event in _chat_service.stream(req.session_id, req.message):
+    async for event in _get_chat_service().stream(req.session_id, req.message):
         yield ServerSentEvent(data=event)
 ```
 
