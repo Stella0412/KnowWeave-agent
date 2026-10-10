@@ -1,0 +1,10 @@
+{"text":"手机膜贴上有气泡，订单号88231，想退货退款","order_id":"88231","claim_type":"退货退款","expected_resolution":"退货退款"}
+{"text":"衣服买小了，订单A1001，想换成大一号","order_id":"A1001","claim_type":"换货","expected_resolution":"换大一号"}
+{"text":"收到杯子碎了，直接退款吧","order_id":null,"claim_type":"仅退款","expected_resolution":"退款"}
+{"text":"订单B2002 的电饭煲坏了，还在保修期，要修","order_id":"B2002","claim_type":"维修","expected_resolution":"维修"}
+{"text":"订单C3003 都三天了怎么还没发货","order_id":"C3003","claim_type":"物流查询","expected_resolution":"查询物流/催发货"}
+{"text":"不想要了，订单D4004，退货","order_id":"D4004","claim_type":"退货退款","expected_resolution":"退货退款"}
+{"text":"少发了一件，订单E5005","order_id":"E5005","claim_type":"其他","expected_resolution":"补发或退款"}
+{"text":"尺码不合适，订单F6006，换货","order_id":"F6006","claim_type":"换货","expected_resolution":"换货"}
+{"text":"质量问题，订单G7007，要求退款","order_id":"G7007","claim_type":"仅退款","expected_resolution":"退款"}
+{"text":"订单H8008 什么时候能送到","order_id":"H8008","claim_type":"物流查询","expected_resolution":"查询物流"}
