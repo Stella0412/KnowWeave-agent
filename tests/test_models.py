@@ -1,3 +1,6 @@
+import pytest
+from sqlalchemy import text
+
 from app.db.base import Base
 from app.db.models import (
     Conversation,
@@ -5,6 +8,7 @@ from app.db.models import (
     FAQ,
     Message,
     Ticket,
+    TicketStatus,
     TicketType,
 )
 
@@ -36,3 +40,43 @@ def test_faq_columns():
 def test_enum_values():
     assert {m.value for m in ConversationStatus} == {"进行中", "已转人工", "已结束"}
     assert {m.value for m in TicketType} == {"售后", "投诉", "咨询"}
+
+
+@pytest.mark.asyncio
+async def test_enum_columns_persist_chinese_literals(session_factory):
+    async with session_factory() as session:
+        conv = Conversation(user_id="u1", status=ConversationStatus.ACTIVE)
+        session.add(conv)
+        await session.commit()
+        await session.refresh(conv)
+
+        session.add(
+            Ticket(
+                ticket_no="T20261010001",
+                conversation_id=conv.id,
+                description="x",
+                ticket_type=TicketType.AFTER_SALE,
+            )
+        )
+        await session.commit()
+
+        # ORM 往返：读回后仍是枚举成员，且 .value 是中文
+        got = await session.get(Conversation, conv.id)
+        assert got.status == ConversationStatus.ACTIVE
+        assert got.status.value == "进行中"
+
+        got_ticket = await session.get(Ticket, "T20261010001")
+        assert got_ticket.ticket_type == TicketType.AFTER_SALE
+        assert got_ticket.ticket_type.value == "售后"
+        assert got_ticket.status == TicketStatus.PENDING
+
+        # 落库的就是中文字面量，不是成员名 ACTIVE/AFTER_SALE
+        conv_status = await session.scalar(
+            text("select status from conversations where id = :i"), {"i": conv.id}
+        )
+        ticket_type = await session.scalar(
+            text("select ticket_type from tickets where ticket_no = :t"),
+            {"t": "T20261010001"},
+        )
+        assert conv_status == "进行中"
+        assert ticket_type == "售后"

@@ -39,7 +39,8 @@ class Conversation(Base):
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(64))
     status: Mapped[ConversationStatus] = mapped_column(
-        Enum(ConversationStatus), default=ConversationStatus.ACTIVE
+        Enum(ConversationStatus, values_callable=lambda e: [m.value for m in e]),
+        default=ConversationStatus.ACTIVE,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -54,7 +55,9 @@ class Message(Base):
     conversation_id: Mapped[int] = mapped_column(
         BIGINT, ForeignKey("conversations.id"), index=True
     )
-    role: Mapped[MessageRole] = mapped_column(Enum(MessageRole))
+    role: Mapped[MessageRole] = mapped_column(
+        Enum(MessageRole, values_callable=lambda e: [m.value for m in e])
+    )
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -82,8 +85,11 @@ class Ticket(Base):
         BIGINT, ForeignKey("conversations.id"), index=True
     )
     description: Mapped[str] = mapped_column(Text)
-    ticket_type: Mapped[TicketType] = mapped_column(Enum(TicketType))
+    ticket_type: Mapped[TicketType] = mapped_column(
+        Enum(TicketType, values_callable=lambda e: [m.value for m in e])
+    )
     status: Mapped[TicketStatus] = mapped_column(
-        Enum(TicketStatus), default=TicketStatus.PENDING
+        Enum(TicketStatus, values_callable=lambda e: [m.value for m in e]),
+        default=TicketStatus.PENDING,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
