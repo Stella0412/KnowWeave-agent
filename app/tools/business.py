@@ -19,7 +19,7 @@ async def query_order(order_id: str) -> str:
 
 @tool
 async def query_product(product_name: str) -> str:
-    """查询商品信息。当用户询问商品价格、库存、规格时调用。"""
+    """查询商品信息。当用户询问商品价格、多少钱、库存、规格时调用。"""
     return (
         f"商品「{product_name}」：价格=¥{random.randint(9, 999)}，"
         f"库存={random.randint(0, 500)}件，规格=标准款"
@@ -40,7 +40,7 @@ async def query_logistics(order_id: str) -> str:
 def build_query_faq(session_factory) -> BaseTool:
     @tool
     async def query_faq(keyword: str) -> str:
-        """查询常见问题。当用户询问退货/换货/发货等政策类问题时调用。"""
+        """查询常见问题。当用户询问退货/换货/发货/邮费/运费等政策类问题时调用。"""
         async with session_factory() as session:
             rows = await ChatRepository(session).search_faq(keyword)
         if not rows:
@@ -55,7 +55,7 @@ def build_create_ticket(session_factory, conversation_id: int) -> BaseTool:
     async def create_ticket(
         description: str, ticket_type: Literal["售后", "投诉", "咨询"]
     ) -> str:
-        """创建人工工单。当用户诉求需要人工介入处理时调用。"""
+        """创建人工工单。当用户投诉、维权、或要求转人工等需要人工介入时调用。"""
         async with session_factory() as session:
             repo = ChatRepository(session)
             ticket_no = await repo.create_ticket(conversation_id, description, ticket_type)
