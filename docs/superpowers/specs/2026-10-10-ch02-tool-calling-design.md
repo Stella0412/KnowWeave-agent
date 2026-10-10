@@ -38,7 +38,7 @@
 ### conversations（会话壳）
 - `id` BIGINT UNSIGNED 自增主键
 - `user_id` VARCHAR(64) NOT NULL —— ch02 无鉴权，统一填固定值 `"anonymous"`（占位）
-- `status` ENUM(`进行中`,`已转人工`,`已结束`) NOT NULL DEFAULT `进行中`
+- `status` ENUM(`进行中`,`已转人工`,`已结束`) NOT NULL DEFAULT `进行中`（ch02 只触发 `进行中`→`已转人工`，`已结束` 无入口、留待后续）
 - `created_at` / `updated_at`
 
 ### messages（消息流水）
@@ -140,7 +140,7 @@ knowweave/
       engine.py          # create_async_engine + async_sessionmaker + get_session
       models.py          # FAQ / Conversation / Message / Ticket
       repository.py      # ChatRepository：会话/消息/工单/FAQ 读写
-      seed.py            # 建表 + 灌 faq 测试数据（幂等）
+      seed.py            # 建表 + 灌 faq 测试数据（幂等；覆盖退货/发货/换货/售后等，**不含邮费/运费**，为验收③保留漏召回）
     tools/
       __init__.py
       business.py        # 5 个 @tool（含依赖注入）
