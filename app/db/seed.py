@@ -42,12 +42,24 @@ DEMO_CONVERSATIONS = [
 
 
 async def seed_conversations(session_factory) -> None:
-    """给「对话挖知识」任务造可重复的演示会话（幂等：已有会话则直接返回）。"""
+    """给「对话挖知识」任务造可重复的演示会话。
+
+    幂等判据 = 演示会话的**首句**是否已在本库里（不是「库里有没有会话」）：本仓库的
+    MySQL 里通常已有 ch02 真实会话，按「有会话就返回」会让演示会话静默缺失，
+    mine_qa 于是挖不到「发票 / 发货快递」这类只存在于演示会话里的问答。
+    """
+    first_turns = {turns[0][1] for turns in DEMO_CONVERSATIONS}
     async with session_factory() as session:
-        count = (await session.execute(select(func.count()).select_from(Conversation))).scalar()
-        if count:
-            return
+        existing = set(
+            (
+                await session.execute(
+                    select(Message.content).where(Message.content.in_(first_turns))
+                )
+            ).scalars()
+        )
         for turns in DEMO_CONVERSATIONS:
+            if turns[0][1] in existing:
+                continue
             conv = Conversation(user_id="anonymous")
             session.add(conv)
             await session.flush()

@@ -1,0 +1,11 @@
+{"query": "邮费是多少", "expect_topic": "运费", "should_hit": true}
+{"query": "运费怎么算", "expect_topic": "运费", "should_hit": true}
+{"query": "退货要自己出邮费吗", "expect_topic": "运费", "should_hit": true}
+{"query": "多少钱包邮", "expect_topic": "运费", "should_hit": true}
+{"query": "收到货不喜欢能退吗", "expect_topic": "无理由退货", "should_hit": true}
+{"query": "拆封的猫粮能退吗", "expect_topic": "不支持", "should_hit": true}
+{"query": "退款几天到账", "expect_topic": "退款", "should_hit": true}
+{"query": "你们发什么快递", "expect_topic": "快递", "should_hit": true}
+{"query": "能开发票吗", "expect_topic": "发票", "should_hit": true}
+{"query": "帮我查一下订单 1001 的物流", "expect_topic": null, "should_hit": false}
+{"query": "今天天气怎么样", "expect_topic": null, "should_hit": false}

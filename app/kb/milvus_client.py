@@ -25,6 +25,9 @@ class MilvusKnowledgeClient:
 
     def ensure_collection(self) -> None:
         if self._client.has_collection(self._collection):
+            # 集合已存在（另一个进程建的）时 load 状态是 NotLoad，本进程内 search 会报
+            # released；load 是进程内的，故每次 attach 都要重新 load（幂等，已 load 再调无副作用）。
+            self._client.load_collection(self._collection)
             return
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
         schema.add_field("id", DataType.INT64, is_primary=True)

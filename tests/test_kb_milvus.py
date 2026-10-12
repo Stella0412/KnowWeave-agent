@@ -70,3 +70,49 @@ def test_build_milvus_client_creates_parent_dir(tmp_path):
         assert target.parent.is_dir()
     finally:
         store.close()
+
+
+_CREATE_SCRIPT = """
+import sys
+
+from app.kb.milvus_client import MilvusKnowledgeClient
+
+uri, dim = sys.argv[1], int(sys.argv[2])
+c = MilvusKnowledgeClient(uri=uri, collection="knowledge", dim=dim)
+c.ensure_collection()
+vec = [0.0] * dim
+vec[0] = 1.0
+c.upsert([1], [vec], ["问甲"], ["答甲"])
+c.close()
+"""
+
+
+def test_search_after_attach_from_another_process(tmp_path):
+    """新进程 attach 已存在的 .db 时必须 load，否则 search 报 released。
+
+    真实复现：eval/eval_retrieval.py 首次真跑时 `Collection 'knowledge' is in state
+    'released'; call load() before search/get/query`。ensure_collection 在集合已存在时
+    直接 return，跳过了 load；而 load 是进程内的（同一进程里再开客户端不会复现，故这里
+    用子进程写盘）。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    uri = str(tmp_path / "kb.db")
+    repo_root = Path(__file__).resolve().parent.parent
+    subprocess.run(
+        [sys.executable, "-c", _CREATE_SCRIPT, uri, str(DIM)],
+        check=True,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    store = MilvusKnowledgeClient(uri=uri, collection="knowledge", dim=DIM)
+    store.ensure_collection()
+    try:
+        hits = store.search(unit(0), top_k=1)
+        assert hits[0]["id"] == 1
+    finally:
+        store.close()
