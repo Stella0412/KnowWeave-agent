@@ -9,13 +9,16 @@ import re
 from dataclasses import dataclass
 
 import tiktoken
-from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 _ENC = tiktoken.get_encoding("cl100k_base")  # 与 ch02 ContextStore 同口径（近似计数）
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 _ALIAS_RE = re.compile(r"^问法\s*[:：]\s*(.+)$")
 KEY_CLAUSE_MARK = "【关键条款】"
+
+# 超长段递归切分的分隔符优先级：段落 → 换行 → 中文句末 → 英文句末 → 空白 → 字符兜底（末尾 "" 触发字符级硬切）
+_LONG_SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " ", ""]
 
 # 标题层级 → MarkdownHeaderTextSplitter 的 metadata 键名（与 headers_to_split_on 一一对应）
 _HEADERS_TO_SPLIT = [
@@ -122,6 +125,56 @@ def _extract_questions_and_aliases(
     return questions, clean_body
 
 
+def trim_to_sentence_end(text: str) -> str:
+    """把文本末尾裁到最近的句末符（含）。没有句末符则原样返回。"""
+    stripped = text.rstrip()
+    for i in range(len(stripped) - 1, -1, -1):
+        if stripped[i] in "。！？；!?;":
+            return stripped[: i + 1]
+    return stripped
+
+
+def _long_splitter(limits: ChunkLimits) -> RecursiveCharacterTextSplitter:
+    """超长段的递归细切器：chunk_size 用目标 token 数；重叠统一交给 _apply_overlap 裁句（chunk_overlap=0 避免双重重叠）。
+
+    `keep_separator="end"`：让句末符留在**前一块**末尾（默认 True 等价 "start"，会把「。」贴到下一块开头，块尾就留半截话）。
+    """
+    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        encoding_name="cl100k_base",
+        chunk_size=max(1, limits.target_tokens),
+        chunk_overlap=0,
+        keep_separator="end",
+        separators=_LONG_SEPARATORS,
+    )
+
+
 def _split_long_text(body: str, limits: ChunkLimits) -> list[str]:
-    """最小实现：正文整体作为一块。Task 5 扩展为「超长段 RecursiveCharacterTextSplitter 递归切 + 重叠裁句」。"""
-    return [body]
+    """超长正文 → 多块：RecursiveCharacterTextSplitter 递归细切（末尾空分隔符触发字符级硬切兜底），再块间加重叠并裁到句首。"""
+    if count_tokens(body) <= limits.max_tokens:
+        return [body]
+    pieces = _long_splitter(limits).split_text(body)
+    return _apply_overlap(pieces, limits.overlap_tokens)
+
+
+def _apply_overlap(pieces: list[str], overlap_tokens: int) -> list[str]:
+    """给第 2 块起的每块头部接上前一块尾部 overlap_tokens，并把接缝对齐到句首。"""
+    if overlap_tokens <= 0 or len(pieces) < 2:
+        return pieces
+    result = [pieces[0]]
+    for prev, piece in zip(pieces, pieces[1:]):
+        overlap = _align_to_sentence_start(_tail_tokens(prev, overlap_tokens))
+        result.append((overlap + piece) if overlap else piece)
+    return result
+
+
+def _tail_tokens(text: str, n: int) -> str:
+    tokens = _ENC.encode(text)
+    return _ENC.decode(tokens[-n:]) if len(tokens) > n else text
+
+
+def _align_to_sentence_start(text: str) -> str:
+    """丢掉开头那半句，从句末符之后开始。找不到句末符则返回空串（不加重叠）。"""
+    for i, ch in enumerate(text):
+        if ch in "。！？；!?;\n":
+            return text[i + 1 :].lstrip()
+    return ""

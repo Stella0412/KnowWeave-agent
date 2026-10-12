@@ -1,4 +1,10 @@
-from app.kb.chunking import ChunkLimits, first_heading, split_markdown
+from app.kb.chunking import (
+    ChunkLimits,
+    count_tokens,
+    first_heading,
+    split_markdown,
+    trim_to_sentence_end,
+)
 
 LIMITS = ChunkLimits()
 
@@ -85,3 +91,51 @@ def test_key_clause_marker_sets_flag():
 def test_plain_clause_is_not_flagged():
     text = "# 政策\n\n## 普通条款\n\n普通说明文字。\n"
     assert split_markdown(text, default_content_type="policy", limits=LIMITS)[0].is_key_clause is False
+
+
+def test_long_section_is_split_into_multiple_chunks():
+    sentence = "这是用来撑长度的句子，重复出现以保证超过块上限。"  # 约 24 token
+    long_body = sentence * 80
+    limits = ChunkLimits(target_tokens=300, max_tokens=400, overlap_tokens=40)
+    chunks = split_markdown(
+        "# 题目\n\n## 超长章节\n\n" + long_body, default_content_type="policy", limits=limits
+    )
+    assert len(chunks) > 3
+    assert all(count_tokens(c.answer) <= limits.max_tokens for c in chunks)
+
+
+def test_chunks_end_at_sentence_boundary():
+    sentence = "第一句说的是甲。第二句说的是乙。第三句说的是丙。"
+    limits = ChunkLimits(target_tokens=12, max_tokens=20, overlap_tokens=0)
+    chunks = split_markdown(
+        "# 题目\n\n## 章节\n\n" + sentence * 6, default_content_type="policy", limits=limits
+    )
+    for c in chunks:
+        assert c.answer.rstrip()[-1] in "。！？；"
+
+
+def test_overlap_text_is_appended_to_next_chunk():
+    sentence = "甲句内容。乙句内容。丙句内容。"
+    limits = ChunkLimits(target_tokens=12, max_tokens=20, overlap_tokens=8)
+    chunks = split_markdown(
+        "# 题目\n\n## 章节\n\n" + sentence * 6, default_content_type="policy", limits=limits
+    )
+    assert len(chunks) >= 2
+    tail_sentence = chunks[0].answer.rstrip().split("。")[-2] + "。"
+    assert tail_sentence in chunks[1].answer
+
+
+def test_single_oversized_sentence_is_hard_split():
+    no_punct = "甲" * 2000
+    limits = ChunkLimits(target_tokens=100, max_tokens=150, overlap_tokens=0)
+    chunks = split_markdown(
+        "# 题目\n\n## 章节\n\n" + no_punct, default_content_type="policy", limits=limits
+    )
+    assert len(chunks) > 1
+    assert all(count_tokens(c.answer) <= limits.max_tokens for c in chunks)
+
+
+def test_trim_to_sentence_end():
+    assert trim_to_sentence_end("完整一句。半截话") == "完整一句。"
+    assert trim_to_sentence_end("没有句末符") == "没有句末符"
+    assert trim_to_sentence_end("完整一句。") == "完整一句。"
