@@ -50,6 +50,47 @@ class MineReport:
     extracted: int = 0
     kept: int = 0
     discarded: int = 0
+    non_answers: int = 0
+
+
+# 客服「没给事实」的话术特征。命中即视为非答复，不当知识入库。
+# 每条都对应本库真实出现过的非答复（首批 10 条，见 tests/test_kb_mining.py 的 REAL_NON_ANSWERS）。
+NON_ANSWER_PATTERNS = (
+    "未查询到",
+    "未查到",
+    "未找到",
+    "没有找到",
+    "未包含",
+    "暂时未",
+    "暂时无法",
+    "无法确认",
+    "无法核实",
+    "无法查询",
+    "无法提供",
+    "无法告知",
+    "无法解答",
+    "无法准确答复",
+    "无法给准确答复",
+    "无法为您",
+    "我无法",
+    "帮您转人工",
+    "转接人工",
+    "转人工",
+    "稍等",
+    "已为您创建工单",
+    "创建工单",
+)
+
+
+def is_non_answer(answer: str) -> bool:
+    """客服这句话是不是「非答复」——没说事实，只是道歉 / 让用户补信息 / 转人工。
+
+    MINING_SYSTEM_PROMPT 里已有这条规则（「用户没得到明确答复…的不要抽」），但实测 LLM 仍会
+    抽出来，所以这里补一道确定性闸门。**代价**：答案里恰好提到这些词的正经问答会被一起丢掉
+    （如「物流未查询到时请联系客服」）；宁缺毋滥——知识库里存了假答案，检索会把它当事实
+    喂回给模型，比少一条知识贵得多。
+    """
+    return any(p in answer for p in NON_ANSWER_PATTERNS)
 
 
 class QAMiner:
@@ -119,7 +160,7 @@ class QAMiner:
         ]
 
     async def _dedupe(self, report: MineReport) -> None:
-        """整体去重：与 knowledge_chunks 已有内容 + 暂存表遗留 KEPT 行 + 本轮 staging 逐条比对。
+        """整体筛选：非答复剔除 + 与 knowledge_chunks 已有内容 / 暂存表遗留 KEPT 行 / 本轮 staging 去重。
 
         分两拨，先遗留行后本轮行（先到先得）：
         - **遗留 KEPT 行**：`clear_batch` 只清本 run 的批次号，别的 run_id（每天的 run_id 都不同）
@@ -133,17 +174,26 @@ class QAMiner:
             seen = {qa_fingerprint(q, a) for q, a in await repo.list_existing_qa()}
 
             stale_drop_ids: list[int] = []
+            stale_non_answer_ids: list[int] = []
             for row in await repo.list_staging(None, StagingStatus.KEPT):
+                if is_non_answer(row.answer):
+                    stale_non_answer_ids.append(row.id)
+                    continue
                 key = qa_fingerprint(row.question, row.answer)
                 if key in seen:
                     stale_drop_ids.append(row.id)
                 else:
                     seen.add(key)
             await repo.set_staging_status(stale_drop_ids, StagingStatus.DISCARDED)
+            await repo.set_staging_status(stale_non_answer_ids, StagingStatus.DISCARDED)
 
             keep_ids: list[int] = []
             drop_ids: list[int] = []
+            non_answer_ids: list[int] = []
             for row in await repo.list_staging(None, StagingStatus.EXTRACTED):
+                if is_non_answer(row.answer):
+                    non_answer_ids.append(row.id)
+                    continue
                 key = qa_fingerprint(row.question, row.answer)
                 if key in seen:
                     drop_ids.append(row.id)
@@ -151,9 +201,11 @@ class QAMiner:
                     seen.add(key)
                     keep_ids.append(row.id)
             await repo.set_staging_status(drop_ids, StagingStatus.DISCARDED)
+            await repo.set_staging_status(non_answer_ids, StagingStatus.DISCARDED)
             await repo.set_staging_status(keep_ids, StagingStatus.KEPT)
             await session.commit()
         report.discarded += len(stale_drop_ids) + len(drop_ids)
+        report.non_answers += len(stale_non_answer_ids) + len(non_answer_ids)
         report.kept += len(keep_ids)
 
     async def _promote_kept(self) -> None:

@@ -41,7 +41,8 @@ async def run(args: argparse.Namespace) -> int:
         report = await miner.mine(run_id=args.run_id)
         print(
             f"[抽取] 会话 {report.conversations} 个 / {report.batches} 批，"
-            f"抽出 {report.extracted} 条，保留 {report.kept}，去重丢弃 {report.discarded}"
+            f"抽出 {report.extracted} 条，保留 {report.kept}，"
+            f"去重丢弃 {report.discarded}，非答复丢弃 {report.non_answers}"
         )
         n = await vectorize_pending(
             SessionFactory, embed=embed_texts, milvus=store, batch_size=200
