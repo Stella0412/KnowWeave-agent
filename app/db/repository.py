@@ -73,6 +73,7 @@ class ChatRepository:
         return list(result.scalars())
 
     async def search_faq(self, keyword: str) -> list[FAQ]:
+        """[已不在召回链路] ch02 的关键词查表；ch03 起 query_faq 走向量检索。保留仅为 ch02 遗留。"""
         like = f"%{keyword}%"
         result = await self._session.execute(
             select(FAQ).where(FAQ.question.like(like) | FAQ.answer.like(like))

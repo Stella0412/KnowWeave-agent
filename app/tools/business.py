@@ -1,10 +1,16 @@
+import asyncio
+import logging
 import random
 from typing import Literal
 
 from langchain_core.tools import BaseTool, tool
 
+from app.config import settings
+from app.core.retrieval import NOT_FOUND, UNAVAILABLE, format_hits, search_knowledge
 from app.db.models import ConversationStatus
 from app.db.repository import ChatRepository
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -38,14 +44,23 @@ async def query_logistics(order_id: str) -> str:
 
 
 def build_query_faq(session_factory) -> BaseTool:
+    """入参/出参契约不变：模型只填 keyword，返回可直接念给用户的文本。
+
+    内脏已从「关键词 LIKE 查 faq 表」换成「向量语义检索 Milvus knowledge 集合」。
+    session_factory 参数保留以不动 registry.build_tools，RAG 路径下不再使用。
+    """
+
     @tool
     async def query_faq(keyword: str) -> str:
         """查询常见问题。当用户询问退货/换货/发货/邮费/运费等政策类问题时调用。"""
-        async with session_factory() as session:
-            rows = await ChatRepository(session).search_faq(keyword)
-        if not rows:
-            return "未找到相关常见问题"
-        return "\n".join(f"问：{r.question}\n答：{r.answer}" for r in rows)
+        try:
+            hits = await asyncio.to_thread(search_knowledge, keyword, settings.retrieval_top_k)
+            if not hits:
+                return NOT_FOUND
+            return format_hits(hits)
+        except Exception:
+            logger.exception("知识库检索失败")
+            return UNAVAILABLE
 
     return query_faq
 

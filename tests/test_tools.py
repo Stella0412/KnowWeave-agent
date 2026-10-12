@@ -14,12 +14,17 @@ async def test_mock_tools_echo_input():
 
 
 @pytest.mark.asyncio
-async def test_query_faq_hit_and_miss(session_factory):
-    from app.db.models import FAQ
-    async with session_factory() as session:
-        session.add(FAQ(question="退货政策是什么", answer="7天无理由退货", category="售后"))
-        await session.commit()
-    tool = build_query_faq(session_factory)
+async def test_query_faq_hit_and_miss(monkeypatch):
+    """v2：query_faq 不再读 faq 表（改走向量检索），故这里只 pin 工具层的出参契约。"""
+    import app.tools.business as business
+    from app.core.retrieval import RetrievalHit
+
+    monkeypatch.setattr(
+        business,
+        "search_knowledge",
+        lambda q, k: [RetrievalHit(1, "退货政策是什么", "7天无理由退货", 0.9)] if "退货" in q else [],
+    )
+    tool = build_query_faq(None)  # RAG 路径不用 session，仅验证签名仍收该参数
     hit = await tool.ainvoke({"keyword": "退货"})
     miss = await tool.ainvoke({"keyword": "邮费"})
     assert "7天无理由退货" in hit
