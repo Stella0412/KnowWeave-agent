@@ -149,11 +149,81 @@ def _long_splitter(limits: ChunkLimits) -> RecursiveCharacterTextSplitter:
 
 
 def _split_long_text(body: str, limits: ChunkLimits) -> list[str]:
-    """超长正文 → 多块：RecursiveCharacterTextSplitter 递归细切（末尾空分隔符触发字符级硬切兜底），再块间加重叠并裁到句首。"""
+    """超长正文 → 多块：表格按行切并复制表头；文本走 RecursiveCharacterTextSplitter；短内容原样一块。"""
     if count_tokens(body) <= limits.max_tokens:
         return [body]
-    pieces = _long_splitter(limits).split_text(body)
+
+    pieces: list[str] = []
+    for kind, block_lines in split_blocks(body.splitlines()):
+        if kind == "table":
+            pieces.extend(_split_table(block_lines, limits))
+        else:
+            pieces.extend(_long_splitter(limits).split_text("\n".join(block_lines)))
     return _apply_overlap(pieces, limits.overlap_tokens)
+
+
+def is_table_block(lines: list[str]) -> bool:
+    """连续 | 行（含 --- 分隔行）构成表格块。要求至少两行且含分隔行，避免把零星竖线误判。"""
+    if len(lines) < 2:
+        return False
+    if not all(line.strip().startswith("|") for line in lines):
+        return False
+    return any(set(line.strip()) <= set("|-: ") and "-" in line for line in lines[1:])
+
+
+def split_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """把行序列切成 ("text"|"table", lines) 块序列。"""
+    blocks: list[tuple[str, list[str]]] = []
+    buffer: list[str] = []
+    kind = "text"
+
+    def flush() -> None:
+        if buffer:
+            blocks.append((kind, list(buffer)))
+            buffer.clear()
+
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith("|"):
+            j = i
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                j += 1
+            if is_table_block(lines[i:j]):
+                flush()
+                blocks.append(("table", lines[i:j]))
+                i = j
+                continue
+        buffer.append(lines[i])
+        i += 1
+    flush()
+    return blocks
+
+
+def _split_table(lines: list[str], limits: ChunkLimits) -> list[str]:
+    """大表格按行切，每片复制表头 + 分隔行；每片行数受 table_max_rows 限制，并按 max_tokens 收缩。
+
+    逐片推进（而非递归对半砍），保证每轮至少吃掉一行 → 绝不会不收敛（单行本身超 max_tokens 时，
+    该行独占一片、接受超限，好过死循环）。
+    """
+    if len(lines) <= limits.table_max_rows + 2:
+        return ["\n".join(lines) + "\n"]
+
+    prefix = f"{lines[0].strip()}\n{lines[1].strip()}\n"
+    rows = lines[2:]
+
+    groups: list[str] = []
+    i = 0
+    while i < len(rows):
+        take = max(1, limits.table_max_rows)
+        while take > 1:
+            candidate = prefix + "".join(row.strip() + "\n" for row in rows[i : i + take])
+            if count_tokens(candidate) <= limits.max_tokens:
+                break
+            take //= 2
+        chunk_rows = rows[i : i + take]
+        groups.append(prefix + "".join(row.strip() + "\n" for row in chunk_rows))
+        i += len(chunk_rows)
+    return groups
 
 
 def _apply_overlap(pieces: list[str], overlap_tokens: int) -> list[str]:

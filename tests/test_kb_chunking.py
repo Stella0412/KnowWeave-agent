@@ -2,6 +2,7 @@ from app.kb.chunking import (
     ChunkLimits,
     count_tokens,
     first_heading,
+    is_table_block,
     split_markdown,
     trim_to_sentence_end,
 )
@@ -139,3 +140,43 @@ def test_trim_to_sentence_end():
     assert trim_to_sentence_end("完整一句。半截话") == "完整一句。"
     assert trim_to_sentence_end("没有句末符") == "没有句末符"
     assert trim_to_sentence_end("完整一句。") == "完整一句。"
+
+
+BIG_TABLE = """# 商品常见问题
+
+## 各品类配送时效
+
+| 品类 | 配送时效 | 是否包邮 |
+| --- | --- | --- |
+""" + "".join(f"| 品类{i} | {i}天 | 是 |\n" for i in range(60))
+
+
+def test_big_table_is_split_by_rows_with_header_repeated():
+    limits = ChunkLimits(target_tokens=200, max_tokens=400, overlap_tokens=0, table_max_rows=10)
+    chunks = split_markdown(BIG_TABLE, default_content_type="faq", limits=limits)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert "| 品类 | 配送时效 | 是否包邮 |" in c.answer  # 每块都复制表头
+        assert "| --- | --- | --- |" in c.answer  # 分隔行也复制
+
+
+def test_table_rows_are_not_cut_in_half():
+    limits = ChunkLimits(target_tokens=200, max_tokens=400, overlap_tokens=0, table_max_rows=10)
+    chunks = split_markdown(BIG_TABLE, default_content_type="faq", limits=limits)
+    for c in chunks:
+        for line in c.answer.splitlines():
+            assert line.count("|") in (0, 4)  # 每行要么非表格，要么是完整的一行四列
+
+
+def test_small_table_stays_intact():
+    text = """# 商品常见问题
+
+## 价格
+
+| 品类 | 价格 |
+| --- | --- |
+| 猫粮 | 89 |
+"""
+    chunks = split_markdown(text, default_content_type="faq", limits=LIMITS)
+    assert len(chunks) == 1
+    assert "| 猫粮 | 89 |" in chunks[0].answer
