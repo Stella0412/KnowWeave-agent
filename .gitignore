@@ -13,8 +13,9 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Milvus Lite 数据文件 + 建库产物
-data/
+# Milvus Lite 数据文件 + 建库产物（但 data/kb/ 的源知识文档是源码，必须入库）
+data/*
+!data/kb/
 
 # IDE
 .idea/
