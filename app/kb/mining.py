@@ -119,14 +119,31 @@ class QAMiner:
         ]
 
     async def _dedupe(self, report: MineReport) -> None:
-        """整体去重：与 knowledge_chunks 已有内容 + staging 内部逐条比对（问法+正文指纹）。"""
+        """整体去重：与 knowledge_chunks 已有内容 + 暂存表遗留 KEPT 行 + 本轮 staging 逐条比对。
+
+        分两拨，先遗留行后本轮行（先到先得）：
+        - **遗留 KEPT 行**：`clear_batch` 只清本 run 的批次号，别的 run_id（每天的 run_id 都不同）
+          留下的 KEPT 行会一直躺在暂存表里。它们若已入库 → 标 DISCARDED，否则 `_promote_kept`
+          每次重跑都把它们重灌一遍（同一条问答在 KB 里出现 N 次）；若没入库 → 留在 KEPT，
+          由本轮补灌（上轮 promote 前崩掉的遗留行因此自动愈合）。
+        - **本轮 EXTRACTED 行**：与已入库内容 + 上面留下的行比对。
+        """
         async with self._session_factory() as session:
             repo = KnowledgeRepository(session)
             seen = {qa_fingerprint(q, a) for q, a in await repo.list_existing_qa()}
-            rows = await repo.list_staging(None, StagingStatus.EXTRACTED)
+
+            stale_drop_ids: list[int] = []
+            for row in await repo.list_staging(None, StagingStatus.KEPT):
+                key = qa_fingerprint(row.question, row.answer)
+                if key in seen:
+                    stale_drop_ids.append(row.id)
+                else:
+                    seen.add(key)
+            await repo.set_staging_status(stale_drop_ids, StagingStatus.DISCARDED)
+
             keep_ids: list[int] = []
             drop_ids: list[int] = []
-            for row in rows:
+            for row in await repo.list_staging(None, StagingStatus.EXTRACTED):
                 key = qa_fingerprint(row.question, row.answer)
                 if key in seen:
                     drop_ids.append(row.id)
@@ -136,7 +153,7 @@ class QAMiner:
             await repo.set_staging_status(drop_ids, StagingStatus.DISCARDED)
             await repo.set_staging_status(keep_ids, StagingStatus.KEPT)
             await session.commit()
-        report.discarded += len(drop_ids)
+        report.discarded += len(stale_drop_ids) + len(drop_ids)
         report.kept += len(keep_ids)
 
     async def _promote_kept(self) -> None:

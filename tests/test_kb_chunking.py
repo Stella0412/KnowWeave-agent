@@ -180,3 +180,19 @@ def test_small_table_stays_intact():
     chunks = split_markdown(text, default_content_type="faq", limits=LIMITS)
     assert len(chunks) == 1
     assert "| 猫粮 | 89 |" in chunks[0].answer
+
+
+def test_split_table_chunks_start_with_header_even_with_overlap():
+    """表格片自带表头，不能被重叠顶掉（spec §6「每组重贴表头行 + 分隔行」）。
+
+    `_apply_overlap` 曾对表格片也接上一片尾巴：表格行以 "\n" 结尾，
+    `_align_to_sentence_start` 会从第一个换行之后取值 → 下一片被塞进一行**数据行**，
+    表头不再是首行，且边界那行重复出现。
+    """
+    limits = ChunkLimits(target_tokens=200, max_tokens=400, overlap_tokens=80, table_max_rows=10)
+    chunks = split_markdown(BIG_TABLE, default_content_type="faq", limits=limits)
+    assert len(chunks) > 1
+    for c in chunks:
+        lines = c.answer.splitlines()
+        assert lines[0].strip() == "| 品类 | 配送时效 | 是否包邮 |"
+        assert lines[1].strip() == "| --- | --- | --- |"

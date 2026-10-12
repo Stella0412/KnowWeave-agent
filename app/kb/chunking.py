@@ -153,12 +153,14 @@ def _split_long_text(body: str, limits: ChunkLimits) -> list[str]:
     if count_tokens(body) <= limits.max_tokens:
         return [body]
 
-    pieces: list[str] = []
+    pieces: list[tuple[str, str]] = []
     for kind, block_lines in split_blocks(body.splitlines()):
         if kind == "table":
-            pieces.extend(_split_table(block_lines, limits))
+            pieces.extend(("table", p) for p in _split_table(block_lines, limits))
         else:
-            pieces.extend(_long_splitter(limits).split_text("\n".join(block_lines)))
+            pieces.extend(
+                ("text", p) for p in _long_splitter(limits).split_text("\n".join(block_lines))
+            )
     return _apply_overlap(pieces, limits.overlap_tokens)
 
 
@@ -226,12 +228,22 @@ def _split_table(lines: list[str], limits: ChunkLimits) -> list[str]:
     return groups
 
 
-def _apply_overlap(pieces: list[str], overlap_tokens: int) -> list[str]:
-    """给第 2 块起的每块头部接上前一块尾部 overlap_tokens，并把接缝对齐到句首。"""
+def _apply_overlap(pieces: list[tuple[str, str]], overlap_tokens: int) -> list[str]:
+    """给第 2 块起的每块头部接上前一块尾部 overlap_tokens（文本块专属），并把接缝对齐到句首。
+
+    表格块完全不参与重叠（spec §6：表格片自带表头 + 分隔行，是自解释的）。理由有两层：
+    1. 接缝排在**块首**：给表格片接上文本尾巴，表头就被挤到第 3 行，「自带表头」失效；
+    2. 表格行的句末符是换行，`_align_to_sentence_start` 于是几乎总能切出一段尾巴 → 上一片的
+       最后一行被复制到下一片开头，同一行在检索结果里出现两次。
+    故只要接缝任意一侧是表格，就跳过重叠。
+    """
     if overlap_tokens <= 0 or len(pieces) < 2:
-        return pieces
-    result = [pieces[0]]
-    for prev, piece in zip(pieces, pieces[1:]):
+        return [text for _, text in pieces]
+    result = [pieces[0][1]]
+    for (prev_kind, prev), (kind, piece) in zip(pieces, pieces[1:]):
+        if prev_kind == "table" or kind == "table":
+            result.append(piece)
+            continue
         overlap = _align_to_sentence_start(_tail_tokens(prev, overlap_tokens))
         result.append((overlap + piece) if overlap else piece)
     return result

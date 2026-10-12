@@ -98,6 +98,55 @@ async def test_mine_rerun_produces_no_duplicates(session_factory):
     assert total == 2
 
 
+async def test_mine_daily_rerun_with_new_run_id_does_not_duplicate(session_factory):
+    """每日重跑（run_id 按日期变，如 mine-20261012 → mine-20261013）不得把上一轮的行再灌一遍。
+
+    `clear_batch` 只清**本 run 的批次号**，上一轮 run 的 KEPT 行原样留在暂存表；而
+    `_promote_kept` 捞的是「全部 KEPT 行」→ 每跑一次 knowledge_chunks（及 Milvus）就
+    多一份，同一条问答在检索结果里重复出现。
+    """
+    await _seed_convs(session_factory, [CONV_A, CONV_B])
+    pairs = [
+        QABatch(pairs=[QAPair(question="你们发什么快递", answer="默认中通快递")]),
+        QABatch(pairs=[QAPair(question="能开发票吗", answer="可以，下单备注抬头")]),
+    ]
+    first = await QAMiner(session_factory, StubModel(list(pairs)), batch_size=1).mine(
+        run_id="mine-20261012"
+    )
+    assert first.kept == 2
+
+    second = await QAMiner(session_factory, StubModel(list(pairs)), batch_size=1).mine(
+        run_id="mine-20261013"
+    )
+    assert second.kept == 0
+
+    async with session_factory() as s:
+        total = len((await s.execute(select(KnowledgeChunk))).scalars().all())
+        still_kept = await KnowledgeRepository(s).list_staging(None, StagingStatus.KEPT)
+    assert total == 2
+    assert still_kept == []
+
+
+async def test_mine_promotes_row_left_kept_by_crashed_run(session_factory):
+    """上一轮「已判定 KEEP、但还没入库」就崩了的行，本轮要补灌（而不是永远卡在 KEPT）。"""
+    await _seed_convs(session_factory, [CONV_A])
+    async with session_factory() as s:
+        await KnowledgeRepository(s).add_staging(
+            "mine-crashed-001", "conversation:1", "你们发什么快递", "默认中通快递"
+        )
+        await KnowledgeRepository(s).set_staging_status(
+            [row.id for row in await KnowledgeRepository(s).list_staging(None, StagingStatus.EXTRACTED)],
+            StagingStatus.KEPT,
+        )
+        await s.commit()
+
+    report = await QAMiner(session_factory, StubModel([]), batch_size=5).mine(run_id="mine-next-day")
+    assert report.kept == 0  # 没有新增 KEEP，只是补灌上一轮的遗留行
+    async with session_factory() as s:
+        rows = (await s.execute(select(KnowledgeChunk))).scalars().all()
+    assert [r.questions for r in rows] == ["你们发什么快递"]
+
+
 async def test_mine_skips_conversations_without_user_assistant_pairs(session_factory):
     await _seed_convs(session_factory, [[("user", "在吗")]])
     report = await QAMiner(session_factory, StubModel([]), batch_size=5).mine(run_id="mine-empty")
