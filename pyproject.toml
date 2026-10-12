@@ -9,6 +9,7 @@ dependencies = [
     "langchain-core>=1.6.9",
     "langchain-openai>=1.7.0",
     "langchain-text-splitters>=0.3.0",
+    "milvus-lite>=3.2.1",
     "pydantic>=2.14.0",
     "pydantic-settings>=2.15.0",
     "pymilvus[milvus-lite]>=3.0.2",
