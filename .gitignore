@@ -13,6 +13,9 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# Milvus Lite 数据文件 + 建库产物
+data/
+
 # IDE
 .idea/
 .vscode/
