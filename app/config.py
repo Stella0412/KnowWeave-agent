@@ -1,9 +1,10 @@
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", populate_by_name=True
     )
 
     llm_base_url: str = "https://api.deepseek.com"
@@ -22,9 +23,20 @@ class Settings(BaseSettings):
     tool_retries: int = 1
 
     # 嵌入模型（BGE-M3 via 硅基流动 OpenAI 兼容端点）
-    embed_base_url: str = "https://api.siliconflow.cn/v1"
-    embed_api_key: str = ""
-    embed_model: str = "BAAI/bge-m3"
+    # 仓库 .env / .env.example 用的是 EMBEDDING_*（沿用仓库既有约定），与字段名 embed_* 不同名 →
+    # 显式给 alias，否则会静默读到空 key（EMBEDDING_API_KEY 匹配不上 embed_api_key）。
+    embed_base_url: str = Field(
+        "https://api.siliconflow.cn/v1",
+        validation_alias=AliasChoices("embed_base_url", "EMBEDDING_BASE_URL", "EMBED_BASE_URL"),
+    )
+    embed_api_key: str = Field(
+        "",
+        validation_alias=AliasChoices("embed_api_key", "EMBEDDING_API_KEY", "EMBED_API_KEY"),
+    )
+    embed_model: str = Field(
+        "BAAI/bge-m3",
+        validation_alias=AliasChoices("embed_model", "EMBEDDING_MODEL", "EMBED_MODEL"),
+    )
     embed_dim: int = 1024
 
     # Milvus：默认 Lite 内嵌（.db 文件），改 http://127.0.0.1:19530 切 standalone

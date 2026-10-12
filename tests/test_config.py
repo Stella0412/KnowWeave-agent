@@ -1,4 +1,21 @@
+import os
+
+import pytest
+
 from app.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def _clean_config_env(monkeypatch):
+    """断言「默认值」的用例必须环境干净。
+
+    pymilvus.settings 在 import 时会 `load_dotenv()`，把仓库 `.env` 注入进程 os.environ
+    （第三方副作用，见 SDD Task 9 Ruling）；pytest 收集阶段就会 import 到它，于是 `Settings(_env_file=None)`
+    读到的仍是本机 .env 的值，「默认值」断言随本机配置漂移。故本文件先清掉相关环境变量。
+    """
+    for key in list(os.environ):
+        if key.startswith(("MYSQL_", "TOOL_", "LLM_", "TOKEN_", "EMBED", "MILVUS_")):
+            monkeypatch.delenv(key, raising=False)
 
 
 def test_settings_defaults():
@@ -47,6 +64,27 @@ def test_embedding_and_milvus_defaults():
     assert s.chunk_table_max_rows == 30
     assert s.kb_docs_dir == "data/kb"
     assert s.mine_batch_size == 20
+
+
+def test_embedding_settings_read_repo_env_names(monkeypatch):
+    """嵌入三项必须读仓库 `.env` / `.env.example` 既有的 EMBEDDING_* 命名（沿用仓库既有约定）。
+
+    字段名是 embed_*（→ 默认认 EMBED_*），与 .env 里的 EMBEDDING_* 对不上就会静默读到空 key。
+    """
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://example.invalid/v1")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "sk-test")
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    s = Settings(_env_file=None)
+    assert s.embed_base_url == "https://example.invalid/v1"
+    assert s.embed_api_key == "sk-test"
+    assert s.embed_model == "BAAI/bge-m3"
+
+
+def test_embedding_settings_still_accept_kwargs():
+    """字段名 kwargs 仍可用（embed_* 加了 alias 后不能被锁死）。"""
+    s = Settings(_env_file=None, embed_api_key="sk-kw", embed_model="m")
+    assert s.embed_api_key == "sk-kw"
+    assert s.embed_model == "m"
 
 
 def test_settings_mysql_from_env(monkeypatch):
