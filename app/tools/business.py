@@ -55,7 +55,8 @@ def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseToo
     @tool
     async def query_faq(keyword: str) -> str:
         """查询常见问题。当用户询问退货/换货/发货/邮费/运费等政策类问题时调用。"""
-        raw_question = turn.raw_question if turn is not None else keyword
+        # 检索有意用模型填的 keyword，而不是 turn.raw_question：turn 可能是 None（脚本/单测直调
+        # 工具），那时只有 keyword 可用；用户原话只用于落低置信度池（_record_low_confidence）。
         try:
             result: RagResult = await asyncio.to_thread(
                 run_pipeline,

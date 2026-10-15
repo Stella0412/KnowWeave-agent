@@ -55,9 +55,14 @@ async def test_build_tools_returns_five_named_tools(session_factory):
     ]
 
 
-def test_tool_timeout_gives_query_faq_a_longer_budget():
+def test_tool_timeout_gives_query_faq_a_longer_budget(monkeypatch):
+    """断言里不许出现 `settings` 对象：它失败时 pytest 会打出 `Settings(...)` 的 repr，
+    而 app/config.py 的 *_api_key 是裸 str、没有掩码 repr → 真实密钥进控制台（评审实测过）。
+    改成 monkeypatch 一个普通数字：失败时打印的是两个 float，同时比原写法更有鉴别力 ——
+    「写死 30.0」或「无条件返回 default」的实现都过不了。"""
     from app.config import settings
     from app.tools.registry import tool_timeout
 
-    assert tool_timeout("query_faq", 5.0) == settings.rag_tool_timeout
-    assert tool_timeout("query_order", 5.0) == 5.0
+    monkeypatch.setattr(settings, "rag_tool_timeout", 7.5)
+    assert tool_timeout("query_faq", 5.0) == 7.5      # 只有真读了 settings 才成立
+    assert tool_timeout("query_order", 5.0) == 5.0    # 其余工具仍拿全局默认，不跟着变松
