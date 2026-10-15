@@ -123,8 +123,14 @@ def run_pipeline(
                 top_n=rerank_n,
             )
             items, rerank_score = _apply_rerank(candidates, ranked)
-            # 精排没真的生效（上游返回空表 / 下标全非法）同样是「降级」，flag 必须对得上
-            # 实际发生了什么（Ruling R1）：这条路径上 rerank_score 必为 None。
+            # 精排没真的生效（上游返回空表 / 下标全非法）同样是「降级」：证据条数必须与
+            # 下面 RerankError 那条路径**一致**（都截到 rerank_n）。`_apply_rerank` 在
+            # picked 为空时返回的是**原始候选全集**（recall_top_k 默认 50），不截的话
+            # 同一个「精排没生效」情形会往 prompt 里塞 50 条、引用面板推 50 条角标，
+            # 而另一条降级路径只塞 10 条 —— 两条路给两个答案。
+            # 拒答判定不受影响：rerank_score 仍是 None（Ruling R1）。
+            if rerank_score is None:
+                items = candidates[:rerank_n]
             rerank_degraded = rerank_score is None
         except RerankError:
             logger.warning("精排不可用，降级为 RRF 顺序", exc_info=True)

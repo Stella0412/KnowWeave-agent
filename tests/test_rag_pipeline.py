@@ -138,6 +138,32 @@ def test_rerank_failure_degrades_to_rrf_order():
     assert [c["chunk_id"] for c in result.citations] == [1, 2]   # 用召回顺序，不崩
 
 
+def test_rerank_returning_empty_table_degrades_like_a_failure():
+    """精排上游返回**合法但空**的 results 是另一条真实可达的降级路径
+    （`app/rag/rerank.py` 对空 results 返回 `[]` 而不抛错），它必须与 RerankError
+    那条路径**行为一致**：证据截到 `rerank_top_n` 条、`rerank_degraded=True`、
+    且不拿候选分去比精排阈值。
+
+    候选数（12）刻意大于 `rerank_top_n`（3）：否则「截到 3 条」与「原样 12 条」
+    在条数上分不出来，这条用例就钉不住任何东西。
+    """
+    many_hits = [
+        {"id": i, "score": 0.9, "question": f"问{i}", "answer": f"答{i}",
+         "section_path": "开票与配送 > 运费与包邮", "content_type": "policy",
+         "row_category": "", "category": "开票与配送"}
+        for i in range(1, 13)
+    ]
+    result = _run(
+        reranker=FakeReranker(scores=[]),
+        milvus=FakeMilvus(hits=many_hits),
+        rerank_top_n=3,
+    )
+    assert result.refused is False
+    assert result.rerank_degraded is True
+    assert len(result.items) == 3        # 与 RerankError 路径一致，而不是候选全集 12 条
+    assert len(result.citations) == 3
+
+
 def test_rewrite_failure_degrades_to_raw_query():
     result = _run(model=FakeModel([
         RuntimeError("改写上游 500"),
