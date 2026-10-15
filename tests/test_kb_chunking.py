@@ -146,9 +146,9 @@ BIG_TABLE = """# 商品常见问题
 
 ## 各品类配送时效
 
-| 品类 | 配送时效 | 是否包邮 |
+| 序号 | 配送时效 | 是否包邮 |
 | --- | --- | --- |
-""" + "".join(f"| 品类{i} | {i}天 | 是 |\n" for i in range(60))
+""" + "".join(f"| 序号{i} | {i}天 | 是 |\n" for i in range(60))
 
 
 def test_big_table_is_split_by_rows_with_header_repeated():
@@ -156,8 +156,9 @@ def test_big_table_is_split_by_rows_with_header_repeated():
     chunks = split_markdown(BIG_TABLE, default_content_type="faq", limits=limits)
     assert len(chunks) > 1
     for c in chunks:
-        assert "| 品类 | 配送时效 | 是否包邮 |" in c.answer  # 每块都复制表头
+        assert "| 序号 | 配送时效 | 是否包邮 |" in c.answer  # 每块都复制表头
         assert "| --- | --- | --- |" in c.answer  # 分隔行也复制
+        assert c.row_category is None      # 非白名单表不记分类
 
 
 def test_table_rows_are_not_cut_in_half():
@@ -173,7 +174,7 @@ def test_small_table_stays_intact():
 
 ## 价格
 
-| 品类 | 价格 |
+| 商品 | 价格 |
 | --- | --- |
 | 猫粮 | 89 |
 """
@@ -194,5 +195,5 @@ def test_split_table_chunks_start_with_header_even_with_overlap():
     assert len(chunks) > 1
     for c in chunks:
         lines = c.answer.splitlines()
-        assert lines[0].strip() == "| 品类 | 配送时效 | 是否包邮 |"
+        assert lines[0].strip() == "| 序号 | 配送时效 | 是否包邮 |"
         assert lines[1].strip() == "| --- | --- | --- |"

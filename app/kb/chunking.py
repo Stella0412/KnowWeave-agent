@@ -17,6 +17,11 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 _ALIAS_RE = re.compile(r"^问法\s*[:：]\s*(.+)$")
 KEY_CLAUSE_MARK = "【关键条款】"
 
+# 「分类维度列」白名单：命中即把整张表按行拆、每行一块并记 row_category。
+# 用白名单而不是「取第一列」——要的是语义确定的维度列，不是碰巧排在最前的那一列（spec §6）。
+CATEGORY_COLUMN_NAMES = ("品类", "问题类型", "类型", "类别", "型号")
+ROW_CATEGORY_MAX_LENGTH = 64
+
 # 超长段递归切分的分隔符优先级：段落 → 换行 → 中文句末 → 英文句末 → 空白 → 字符兜底（末尾 "" 触发字符级硬切）
 _LONG_SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " ", ""]
 
@@ -47,6 +52,8 @@ class Chunk:
     section_path: str | None = None
     content_type: str = "md"
     is_key_clause: bool = False
+    # 分类维度表按行拆时该行分类列的取值；其余块留 None（不从自由正文猜分类）
+    row_category: str | None = None
 
 
 def count_tokens(text: str) -> int:
@@ -92,7 +99,7 @@ def split_markdown(
         questions, body = _extract_questions_and_aliases(body, path[-1], default_content_type)
         category = " > ".join(path[:-1]) if len(path) > 1 else path[0]
         section_path = " > ".join(path)
-        for piece in _split_long_text(body, limits):
+        for piece, row_category in _split_body(body, limits):
             chunks.append(
                 Chunk(
                     category=category[:255],
@@ -101,6 +108,7 @@ def split_markdown(
                     section_path=section_path[:512],
                     content_type=default_content_type,
                     is_key_clause=KEY_CLAUSE_MARK in piece,
+                    row_category=row_category,
                 )
             )
     return chunks
@@ -148,20 +156,71 @@ def _long_splitter(limits: ChunkLimits) -> RecursiveCharacterTextSplitter:
     )
 
 
-def _split_long_text(body: str, limits: ChunkLimits) -> list[str]:
-    """超长正文 → 多块：表格按行切并复制表头；文本走 RecursiveCharacterTextSplitter；短内容原样一块。"""
-    if count_tokens(body) <= limits.max_tokens:
-        return [body]
+def _split_body(body: str, limits: ChunkLimits) -> list[tuple[str, str | None]]:
+    """正文 → [(块文本, row_category)]。
 
-    pieces: list[tuple[str, str]] = []
-    for kind, block_lines in split_blocks(body.splitlines()):
+    两条路：① 含分类维度表的正文走块级拆分（表按行拆，其余块原样或递归切）；
+    ② 其余完全沿用 ch03 行为（短正文整块返回），避免无谓的块数漂移。
+    """
+    lines = body.splitlines()
+    blocks = split_blocks(lines)
+    has_category_table = any(
+        kind == "table" and find_category_column(block[0]) is not None for kind, block in blocks
+    )
+    if not has_category_table and count_tokens(body) <= limits.max_tokens:
+        return [(body, None)]
+
+    pieces: list[tuple[str, str, str | None]] = []
+    for kind, block_lines in blocks:
         if kind == "table":
-            pieces.extend(("table", p) for p in _split_table(block_lines, limits))
-        else:
-            pieces.extend(
-                ("text", p) for p in _long_splitter(limits).split_text("\n".join(block_lines))
+            column = find_category_column(block_lines[0])
+            category_rows = (
+                _split_category_table(block_lines, column) if column is not None else []
             )
+            if category_rows:
+                pieces.extend(("catrow", text, row_category) for text, row_category in category_rows)
+            else:
+                pieces.extend(("table", piece, None) for piece in _split_table(block_lines, limits))
+        else:
+            text = "\n".join(block_lines)
+            if count_tokens(text) <= limits.max_tokens:
+                pieces.append(("text", text, None))
+            else:
+                pieces.extend(
+                    ("text", piece, None) for piece in _long_splitter(limits).split_text(text)
+                )
     return _apply_overlap(pieces, limits.overlap_tokens)
+
+
+def split_table_row(line: str) -> list[str]:
+    """`| a | b |` → ["a", "b"]。表格行只有这一种解析方式，集中一处免得各写一遍。"""
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def find_category_column(header_line: str) -> int | None:
+    """表头里分类维度列的下标；没有则 None。"""
+    for index, cell in enumerate(split_table_row(header_line)):
+        if cell in CATEGORY_COLUMN_NAMES:
+            return index
+    return None
+
+
+def _split_category_table(lines: list[str], column: int) -> list[tuple[str, str]]:
+    """分类维度表按行拆：每块 = 表头 + 分隔行 + 1 行数据，返回 [(块文本, row_category)]。
+
+    整行缺失分类格（列数不足）时整张表退化成「不拆」，由调用方兜底 —— 与其猜一个类别，
+    不如老实当普通表（Review Focus 5）。
+    """
+    header, separator = lines[0].strip(), lines[1].strip()
+    header_cells = split_table_row(header)
+    pieces: list[tuple[str, str]] = []
+    for row in lines[2:]:
+        cells = split_table_row(row)
+        # 行缺格（列数与表头不一致）或分类格缺失/为空 → 整表退化成普通表，不猜（Review Focus 5）。
+        if len(cells) != len(header_cells) or column >= len(cells) or not cells[column]:
+            return []
+        pieces.append((f"{header}\n{separator}\n{row.strip()}\n", cells[column][:ROW_CATEGORY_MAX_LENGTH]))
+    return pieces
 
 
 def is_table_block(lines: list[str]) -> bool:
@@ -228,24 +287,25 @@ def _split_table(lines: list[str], limits: ChunkLimits) -> list[str]:
     return groups
 
 
-def _apply_overlap(pieces: list[tuple[str, str]], overlap_tokens: int) -> list[str]:
-    """给第 2 块起的每块头部接上前一块尾部 overlap_tokens（文本块专属），并把接缝对齐到句首。
+def _apply_overlap(
+    pieces: list[tuple[str, str, str | None]], overlap_tokens: int
+) -> list[tuple[str, str | None]]:
+    """给第 2 块起的每块头部接上前一块尾部 overlap_tokens（**仅 text→text 接缝**），并把接缝对齐到句首。
 
-    表格块完全不参与重叠（spec §6：表格片自带表头 + 分隔行，是自解释的）。理由有两层：
+    表格块与分类行块完全不参与重叠（spec §6：表格片自带表头 + 分隔行，是自解释的）。理由有两层：
     1. 接缝排在**块首**：给表格片接上文本尾巴，表头就被挤到第 3 行，「自带表头」失效；
     2. 表格行的句末符是换行，`_align_to_sentence_start` 于是几乎总能切出一段尾巴 → 上一片的
        最后一行被复制到下一片开头，同一行在检索结果里出现两次。
-    故只要接缝任意一侧是表格，就跳过重叠。
     """
     if overlap_tokens <= 0 or len(pieces) < 2:
-        return [text for _, text in pieces]
-    result = [pieces[0][1]]
-    for (prev_kind, prev), (kind, piece) in zip(pieces, pieces[1:]):
-        if prev_kind == "table" or kind == "table":
-            result.append(piece)
+        return [(text, row_category) for _, text, row_category in pieces]
+    result = [(pieces[0][1], pieces[0][2])]
+    for (prev_kind, prev_text, _), (kind, text, row_category) in zip(pieces, pieces[1:]):
+        if prev_kind != "text" or kind != "text":
+            result.append((text, row_category))
             continue
-        overlap = _align_to_sentence_start(_tail_tokens(prev, overlap_tokens))
-        result.append((overlap + piece) if overlap else piece)
+        overlap = _align_to_sentence_start(_tail_tokens(prev_text, overlap_tokens))
+        result.append(((overlap + text) if overlap else text, row_category))
     return result
 
 
