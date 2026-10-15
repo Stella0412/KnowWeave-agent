@@ -6,8 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     Conversation,
     ConversationStatus,
+    FaithCase,
+    FaithCaseStatus,
     FAQ,
     KnowledgeChunk,
+    LowConfidenceQuestion,
+    LowConfidenceSource,
     Message,
     MessageRole,
     QAExtractionStaging,
@@ -233,3 +237,130 @@ class KnowledgeRepository:
             row = await self._session.get(QAExtractionStaging, sid)
             if row is not None:
                 row.status = status
+
+
+class LowConfidenceRepository:
+    """低置信度问题池读写。方法只改 session，由调用方 commit。"""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def add(
+        self,
+        conversation_id: int | None,
+        raw_question: str,
+        source: LowConfidenceSource | str,
+        reason: str | None,
+    ) -> LowConfidenceQuestion:
+        row = LowConfidenceQuestion(
+            conversation_id=conversation_id,
+            raw_question=raw_question,
+            source=source,
+            reason=reason,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def list_questions(
+        self, source: str | None = None, limit: int = 50
+    ) -> list[LowConfidenceQuestion]:
+        stmt = select(LowConfidenceQuestion)
+        if source is not None:
+            stmt = stmt.where(LowConfidenceQuestion.source == source)
+        stmt = stmt.order_by(LowConfidenceQuestion.id.desc()).limit(limit)
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def count_by_source(self) -> dict[str, int]:
+        stmt = select(LowConfidenceQuestion.source, func.count()).group_by(
+            LowConfidenceQuestion.source
+        )
+        return {
+            (row.source.value if hasattr(row.source, "value") else str(row.source)): int(row[1])
+            for row in (await self._session.execute(stmt)).all()
+        }
+
+
+class FaithCaseRepository:
+    """编造个案台账读写。一题一行，复发不新增行只累加 seen_count。"""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def upsert_case(
+        self,
+        *,
+        eval_id: str,
+        bucket: str,
+        query: str,
+        strategy: str,
+        answer: str,
+        reason: str,
+        citations: list | None,
+        judge_model: str | None,
+    ) -> FaithCase:
+        now = datetime.now()
+        row = (
+            await self._session.execute(
+                select(FaithCase).where(FaithCase.eval_id == eval_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = FaithCase(
+                eval_id=eval_id, bucket=bucket, query=query, strategy=strategy,
+                answer=answer, reason=reason, citations=citations,
+                judge_model=judge_model, status=FaithCaseStatus.OPEN,
+                seen_count=1, first_seen_at=now, last_seen_at=now,
+            )
+            self._session.add(row)
+            await self._session.flush()
+            return row
+
+        # 同一道题再次被判编造：更新成最近一次的快照，累加次数
+        row.bucket = bucket
+        row.query = query
+        row.strategy = strategy
+        row.answer = answer
+        row.reason = reason
+        row.citations = citations
+        row.judge_model = judge_model
+        row.seen_count += 1
+        row.last_seen_at = now
+        # 已经处置过的又被判出来 → 那是复发，退回未解决；resolved_at 保留，用来标「复发」
+        if row.status is not FaithCaseStatus.OPEN:
+            row.status = FaithCaseStatus.OPEN
+            row.resolution = None
+        await self._session.flush()
+        return row
+
+    async def list_cases(
+        self, status: FaithCaseStatus | str | None = None, limit: int = 100
+    ) -> list[FaithCase]:
+        stmt = select(FaithCase)
+        if status is not None:
+            stmt = stmt.where(FaithCase.status == status)
+        stmt = stmt.order_by(FaithCase.last_seen_at.desc(), FaithCase.id.desc()).limit(limit)
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def set_status(
+        self,
+        eval_id: str,
+        status: FaithCaseStatus | str,
+        resolution: str | None = None,
+    ) -> FaithCase | None:
+        row = (
+            await self._session.execute(select(FaithCase).where(FaithCase.eval_id == eval_id))
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        row.status = status
+        if str(status) in (FaithCaseStatus.RESOLVED.value, FaithCaseStatus.NOT_NEEDED.value) or (
+            isinstance(status, FaithCaseStatus) and status is not FaithCaseStatus.OPEN
+        ):
+            row.resolution = resolution
+            row.resolved_at = datetime.now()
+        else:
+            # 退回未解决：处置说明清空（空着的处置在台账上等于没有交代）
+            row.resolution = None
+        await self._session.flush()
+        return row
