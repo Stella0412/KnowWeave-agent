@@ -5,7 +5,12 @@ import pytest
 from app.db.models import VectorizeStatus
 from app.db.repository import KnowledgeRepository
 from app.kb.chunking import Chunk
-from app.kb.dualwrite import vectorize_pending, vectorize_text, write_chunks_pending
+from app.kb.dualwrite import (
+    build_milvus_rows,
+    vectorize_pending,
+    vectorize_text,
+    write_chunks_pending,
+)
 from app.kb.milvus_client import MilvusKnowledgeClient
 
 DIM = 16
@@ -88,3 +93,49 @@ async def test_interrupted_vectorize_is_resumed_on_rerun(session_factory, milvus
         assert await repo.count_by_status(VectorizeStatus.PENDING) == 0
         assert await repo.count_by_status(VectorizeStatus.DONE) == 3
     assert milvus.count() == 3
+
+
+def test_build_milvus_rows_carries_text_and_metadata():
+    class Row:
+        id = 5
+        category = "售后手册"
+        questions = "退款"
+        answer = "3 个工作日"
+        content_type = "manual"
+        section_path = "售后手册 > 常见问题处理时限"
+        row_category = "退款"
+        is_key_clause = True
+
+    rows = build_milvus_rows([Row()], [[0.1, 0.2]])
+    assert rows == [{
+        "id": 5,
+        "vector": [0.1, 0.2],
+        "text": "售后手册\n退款\n3 个工作日",
+        "question": "退款",
+        "answer": "3 个工作日",
+        "category": "售后手册",
+        "content_type": "manual",
+        "section_path": "售后手册 > 常见问题处理时限",
+        "row_category": "退款",
+        "is_key_clause": True,
+    }]
+
+
+def test_build_milvus_rows_defaults_none_metadata_to_empty_string():
+    """Milvus 的 VARCHAR 不接受 None；缺值统一落空串（布尔另有默认）。"""
+
+    class Row:
+        id = 6
+        category = "文档"
+        questions = "q"
+        answer = "a"
+        content_type = None
+        section_path = None
+        row_category = None
+        is_key_clause = False
+
+    row = build_milvus_rows([Row()], [[0.0]])[0]
+    assert row["content_type"] == "md"       # content_type 缺省落 md，与切分默认一致
+    assert row["section_path"] == ""
+    assert row["row_category"] == ""
+    assert row["is_key_clause"] is False
