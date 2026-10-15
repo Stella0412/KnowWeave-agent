@@ -8,9 +8,10 @@ from langchain_core.messages import (
 
 from app.db.repository import ChatRepository
 from app.prompts.customer_service import SYSTEM_PROMPT
+from app.rag.pipeline import TurnContext, default_source_files
 from app.services.context_service import ContextStore
 from app.tools.executor import execute_tool
-from app.tools.registry import build_tools
+from app.tools.registry import build_tools, tool_timeout
 
 
 def _row_to_message(row) -> BaseMessage:
@@ -56,7 +57,13 @@ class ChatService:
             system = SystemMessage(content=SYSTEM_PROMPT)
             trimmed = self._store.trim(system, history)
             decision_messages = [system] + trimmed
-            tools = build_tools(self._session_factory, conversation_id)
+            # 本轮侧信道：用户原话 + 引用采集器 + KB 文件反查表
+            turn = TurnContext(
+                raw_question=message,
+                conversation_id=conversation_id,
+                source_files=default_source_files(),
+            )
+            tools = build_tools(self._session_factory, conversation_id, turn)
             ai_msg = await self._model.bind_tools(tools).ainvoke(decision_messages)
 
             if ai_msg.tool_calls:
@@ -72,7 +79,9 @@ class ChatService:
                 by_name = {t.name: t for t in tools}
                 tool_msgs = [
                     await execute_tool(
-                        tc, by_name, timeout=self._tool_timeout, retries=self._tool_retries
+                        tc, by_name,
+                        timeout=tool_timeout(tc["name"], self._tool_timeout),
+                        retries=self._tool_retries,
                     )
                     for tc in ai_msg.tool_calls
                 ]
@@ -103,6 +112,10 @@ class ChatService:
                     conversation_id, role="assistant", content="".join(collected)
                 )
                 await session.commit()
+            # 5.5 引用快照先于 done 推给前端：形状与 faith_cases.citations 的注释一致，
+            # 前端 handleLine 的 switch 无 default，老前端会自动忽略这个未知事件（向后兼容）
+            if turn.citations:
+                yield {"type": "citations", "items": turn.citations}
             yield {"type": "done"}
         except Exception as e:
             yield {"type": "error", "message": str(e)}

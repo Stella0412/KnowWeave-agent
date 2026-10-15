@@ -61,6 +61,7 @@ async def test_no_tool_path_streams_and_persists(session_factory):
     events = await _collect(svc, None, "你好")
     tokens = "".join(e["content"] for e in events if e["type"] == "token")
     assert tokens == "您好"
+    assert "citations" not in [e["type"] for e in events]
 
 
 @pytest.mark.asyncio
@@ -107,3 +108,43 @@ async def test_chat_router_empty_message_422():
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.post("/chat", json={"message": ""})
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_tool_path_pushes_citations_before_done(session_factory, monkeypatch):
+    """验收③ 依赖这条 SSE 契约：引用载荷必须在 done 之前到达，前端才来得及挂角标。
+
+    这条同时钉住两件事：build_tools 真的收到了第三个实参（TurnContext），
+    以及 ChatService 把 turn.citations 推成了 citations 事件。
+    """
+    import app.services.chat_service as chat_service
+    from langchain_core.tools import tool
+
+    captured = {}
+
+    @tool
+    async def query_probe(keyword: str) -> str:
+        """探测工具：把一条引用写进本轮的侧信道。"""
+        captured["turn"].citations.append({"n": 1, "chunk_id": 7, "answer": "满 99 元包邮"})
+        return "命中"
+
+    def fake_build_tools(session_factory, conversation_id, turn=None):
+        captured["turn"] = turn
+        return [query_probe]
+
+    monkeypatch.setattr(chat_service, "build_tools", fake_build_tools)
+
+    decision = AIMessage(content="", tool_calls=[
+        {"name": "query_probe", "args": {"keyword": "邮费"}, "id": "call_1", "type": "tool_call"}
+    ])
+    svc = ChatService(FakeModel(decision=decision, chunks=["好的"]), session_factory)
+    events = await _collect(svc, None, "邮费多少")
+    types = [e["type"] for e in events]
+
+    assert "citations" in types
+    assert types.index("citations") < types.index("done")   # 顺序，不是只要出现过
+    assert types[-1] == "done"
+    payload = next(e for e in events if e["type"] == "citations")
+    assert payload["items"][0]["chunk_id"] == 7
+    # 侧信道里必须是用户原话（DDL 的语义 + T13 的落池规则都建立在这上面）
+    assert captured["turn"].raw_question == "邮费多少"

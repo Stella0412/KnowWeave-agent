@@ -5,10 +5,11 @@ from typing import Literal
 
 from langchain_core.tools import BaseTool, tool
 
-from app.config import settings
-from app.core.retrieval import NOT_FOUND, UNAVAILABLE, format_hits, search_knowledge
+from app.core.retrieval import UNAVAILABLE
 from app.db.models import ConversationStatus
-from app.db.repository import ChatRepository
+from app.db.repository import ChatRepository, LowConfidenceRepository
+from app.rag.pipeline import RagResult, TurnContext, default_source_files, run_pipeline
+from app.rag.refusal import REFUSAL_TEXT, pool_record
 
 logger = logging.getLogger(__name__)
 
@@ -43,26 +44,56 @@ async def query_logistics(order_id: str) -> str:
     )
 
 
-def build_query_faq(session_factory) -> BaseTool:
+def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseTool:
     """入参/出参契约不变：模型只填 keyword，返回可直接念给用户的文本。
 
-    内脏已从「关键词 LIKE 查 faq 表」换成「向量语义检索 Milvus knowledge 集合」。
-    session_factory 参数保留以不动 registry.build_tools，RAG 路径下不再使用。
+    内脏从 ch03 的 dense 单路换成 app/rag 的完整管线（混合检索 + 精排 + 引用编号 + 两段拒答）。
+    拒答时返回 REFUSAL_TEXT 而不是空串：模型拿到一句明确的「没查到依据」才会照实说，
+    拿到空串它反而容易用自己的常识补全。
     """
 
     @tool
     async def query_faq(keyword: str) -> str:
         """查询常见问题。当用户询问退货/换货/发货/邮费/运费等政策类问题时调用。"""
+        raw_question = turn.raw_question if turn is not None else keyword
         try:
-            hits = await asyncio.to_thread(search_knowledge, keyword, settings.retrieval_top_k)
-            if not hits:
-                return NOT_FOUND
-            return format_hits(hits)
+            result: RagResult = await asyncio.to_thread(
+                run_pipeline,
+                keyword,
+                source_files=(turn.source_files if turn is not None else default_source_files()),
+            )
         except Exception:
             logger.exception("知识库检索失败")
             return UNAVAILABLE
 
+        if result.refused:
+            await _record_low_confidence(session_factory, turn, result)
+            return REFUSAL_TEXT
+
+        if turn is not None:
+            turn.citations.extend(result.citations)
+        return result.evidence_text
+
     return query_faq
+
+
+async def _record_low_confidence(session_factory, turn: TurnContext | None, result: RagResult) -> None:
+    """落低置信度问题池。**失败只记 warning，不影响本轮回答**（Review Focus 6）。
+
+    池子写的是**用户原话**（`turn.raw_question`）：DDL 的语义就是原话，且改写本身可能把问题带偏，
+    拿改写后的问法落池会掩盖这一点。
+    """
+    if session_factory is None:
+        return
+    raw_question = turn.raw_question if turn is not None else result.raw_query
+    conversation_id = turn.conversation_id if turn is not None else None
+    record = pool_record(raw_question, result.refusal_source, result.refusal_reason)
+    try:
+        async with session_factory() as session:
+            await LowConfidenceRepository(session).add(conversation_id, **record)
+            await session.commit()
+    except Exception:
+        logger.warning("低置信度问题落池失败（不影响本轮回答）", exc_info=True)
 
 
 def build_create_ticket(session_factory, conversation_id: int) -> BaseTool:

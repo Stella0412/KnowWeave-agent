@@ -1,26 +1,105 @@
 import app.tools.business as business
-from app.core.retrieval import NOT_FOUND, UNAVAILABLE, RetrievalHit
+from app.core.retrieval import UNAVAILABLE
+from app.rag.evidence import Evidence
+from app.rag.pipeline import RagResult, TurnContext
+from app.rag.refusal import REFUSAL_TEXT
 
 
-async def test_query_faq_hit_formats_and_keeps_contract(monkeypatch):
-    hits = [RetrievalHit(1, "邮费是多少\n运费怎么算", "满 99 包邮", 0.9)]
-    monkeypatch.setattr(business, "search_knowledge", lambda q, k: hits)
-    tool = business.build_query_faq(session_factory=None)
+def _result(**over):
+    payload = {
+        "refused": False, "raw_query": "邮费是多少", "strategy": "hybrid_rerank",
+        "evidence_text": "[1] 开票与配送 > 运费与包邮\n问：运费怎么算\n答：满 99 元包邮",
+        "citations": [{"n": 1, "chunk_id": 7, "answer": "满 99 元包邮"}],
+        "items": [Evidence(id=7, question="运费怎么算", answer="满 99 元包邮",
+                           section_path="开票与配送 > 运费与包邮", content_type="policy",
+                           row_category="", category="开票与配送", score=0.8, n=1)],
+    }
+    payload.update(over)
+    return RagResult(**payload)
+
+
+async def test_query_faq_returns_evidence_text_and_collects_citations(monkeypatch):
+    monkeypatch.setattr(business, "run_pipeline", lambda q, **kw: _result())
+    turn = TurnContext(raw_question="邮费是多少", conversation_id=3)
+    tool = business.build_query_faq(session_factory=None, turn=turn)
     out = await tool.ainvoke({"keyword": "邮费是多少"})
-    assert out == "问：邮费是多少 / 运费怎么算\n答：满 99 包邮"
+    assert "满 99 元包邮" in out
+    assert turn.citations[0]["chunk_id"] == 7
+    # 入参契约不变
     assert list(tool.args_schema.model_fields) == ["keyword"]
 
 
-async def test_query_faq_miss_returns_not_found(monkeypatch):
-    monkeypatch.setattr(business, "search_knowledge", lambda q, k: [])
-    tool = business.build_query_faq(session_factory=None)
-    assert await tool.ainvoke({"keyword": "今天天气"}) == NOT_FOUND
+async def test_query_faq_refusal_returns_refusal_text_and_writes_pool(monkeypatch):
+    written = []
+
+    class FakeRepo:
+        def __init__(self, session):
+            pass
+
+        async def add(self, conversation_id, raw_question, source, reason):
+            written.append((conversation_id, raw_question, source, reason))
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def commit(self):
+            pass
+
+    monkeypatch.setattr(business, "run_pipeline", lambda q, **kw: _result(
+        refused=True, refusal_source="retrieval_low_conf",
+        refusal_reason="召回结果为空", evidence_text="", citations=[], items=[],
+    ))
+    monkeypatch.setattr(business, "LowConfidenceRepository", FakeRepo)
+
+    turn = TurnContext(raw_question="今天天气怎么样", conversation_id=9)
+    tool = business.build_query_faq(session_factory=FakeSession, turn=turn)
+    out = await tool.ainvoke({"keyword": "今天天气怎么样"})
+    assert out == REFUSAL_TEXT
+    assert written == [(9, "今天天气怎么样", "retrieval_low_conf", "召回结果为空")]
+    assert turn.citations == []
 
 
-async def test_query_faq_does_not_raise_on_search_failure(monkeypatch):
-    def boom(q, k):
+async def test_query_faq_pool_write_failure_does_not_break_the_answer(monkeypatch):
+    """池子是后台资产，不该拖垮会话（Review Focus 6）。"""
+    class BoomRepo:
+        def __init__(self, session):
+            pass
+
+        async def add(self, *a, **kw):
+            raise RuntimeError("MySQL 挂了")
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(business, "run_pipeline", lambda q, **kw: _result(
+        refused=True, refusal_source="self_check", refusal_reason="证据不足",
+        evidence_text="", citations=[], items=[],
+    ))
+    monkeypatch.setattr(business, "LowConfidenceRepository", BoomRepo)
+
+    tool = business.build_query_faq(session_factory=FakeSession, turn=TurnContext(raw_question="x"))
+    assert await tool.ainvoke({"keyword": "x"}) == REFUSAL_TEXT
+
+
+async def test_query_faq_does_not_raise_on_pipeline_failure(monkeypatch):
+    def boom(q, **kw):
         raise RuntimeError("milvus 连不上")
 
-    monkeypatch.setattr(business, "search_knowledge", boom)
-    tool = business.build_query_faq(session_factory=None)
+    monkeypatch.setattr(business, "run_pipeline", boom)
+    tool = business.build_query_faq(session_factory=None, turn=TurnContext(raw_question="x"))
     assert await tool.ainvoke({"keyword": "邮费是多少"}) == UNAVAILABLE
+
+
+async def test_query_faq_without_turn_still_works(monkeypatch):
+    """没有 TurnContext（脚本/单测直调工具）时不能崩，只是收不到引用。"""
+    monkeypatch.setattr(business, "run_pipeline", lambda q, **kw: _result())
+    tool = business.build_query_faq(session_factory=None)
+    assert "满 99 元包邮" in await tool.ainvoke({"keyword": "邮费是多少"})

@@ -15,20 +15,23 @@ async def test_mock_tools_echo_input():
 
 @pytest.mark.asyncio
 async def test_query_faq_hit_and_miss(monkeypatch):
-    """v2：query_faq 不再读 faq 表（改走向量检索），故这里只 pin 工具层的出参契约。"""
+    """v2：query_faq 内部改调 rag.pipeline，这里只 pin 工具层的出参契约。"""
     import app.tools.business as business
-    from app.core.retrieval import RetrievalHit
+    from app.rag.pipeline import RagResult
 
-    monkeypatch.setattr(
-        business,
-        "search_knowledge",
-        lambda q, k: [RetrievalHit(1, "退货政策是什么", "7天无理由退货", 0.9)] if "退货" in q else [],
-    )
-    tool = build_query_faq(None)  # RAG 路径不用 session，仅验证签名仍收该参数
+    def fake_pipeline(q, **kw):
+        if "退货" in q:
+            return RagResult(refused=False, raw_query=q, strategy="hybrid_rerank",
+                             evidence_text="[1] 退货退款政策 > 无理由退货\n问：退货\n答：7 天无理由退货")
+        return RagResult(refused=True, raw_query=q, strategy="hybrid_rerank",
+                         refusal_source="retrieval_low_conf", refusal_reason="召回结果为空")
+
+    monkeypatch.setattr(business, "run_pipeline", fake_pipeline)
+    tool = business.build_query_faq(None)
     hit = await tool.ainvoke({"keyword": "退货"})
     miss = await tool.ainvoke({"keyword": "邮费"})
-    assert "7天无理由退货" in hit
-    assert "未找到" in miss
+    assert "7 天无理由退货" in hit
+    assert "人工" in miss
 
 
 @pytest.mark.asyncio
@@ -50,3 +53,11 @@ async def test_build_tools_returns_five_named_tools(session_factory):
     assert [t.name for t in tools] == [
         "query_order", "query_product", "query_logistics", "query_faq", "create_ticket",
     ]
+
+
+def test_tool_timeout_gives_query_faq_a_longer_budget():
+    from app.config import settings
+    from app.tools.registry import tool_timeout
+
+    assert tool_timeout("query_faq", 5.0) == settings.rag_tool_timeout
+    assert tool_timeout("query_order", 5.0) == 5.0
