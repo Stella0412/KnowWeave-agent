@@ -11,7 +11,6 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -197,7 +196,7 @@ class LowConfidenceQuestion(Base):
         Enum(LowConfidenceSource, values_callable=lambda e: [m.value for m in e]), index=True
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
 class FaithCase(Base):

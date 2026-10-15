@@ -181,8 +181,8 @@ def test_faith_case_columns_and_status_values():
 
 
 @pytest.mark.asyncio
-async def test_faith_cases_roundtrip_chinese_status(session_factory):
-    """中文枚举值的往返：DDL 里 status 存的就是这三个中文串，ORM 必须原样存回去。"""
+async def test_faith_case_status_persists_chinese_literal(session_factory):
+    """status 必须落 DDL 的中文字面量「未解决」而非枚举名 OPEN（values_callable 兜底）。"""
     from app.db.models import FaithCase, FaithCaseStatus
 
     async with session_factory() as session:
@@ -193,5 +193,9 @@ async def test_faith_cases_roundtrip_chinese_status(session_factory):
         await session.commit()
     async with session_factory() as session:
         row = (await session.execute(select(FaithCase))).scalar_one()
+        stored = await session.scalar(
+            text("select status from faith_cases where eval_id = :e"), {"e": "B03"}
+        )
     assert row.status is FaithCaseStatus.OPEN
     assert row.seen_count == 1
+    assert stored == "未解决"
