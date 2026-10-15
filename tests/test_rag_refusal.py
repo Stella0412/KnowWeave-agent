@@ -66,8 +66,14 @@ def test_rerank_degraded_does_not_apply_the_rerank_threshold():
 def test_vector_strategy_without_threshold_argument_uses_settings(monkeypatch):
     from app.rag import refusal
 
+    # 0.7 夹在「真实默认 0.55」与「monkeypatch 后的 0.9」之间：只有真的读了 settings 才会拒。
+    # 若实现把 0.55 硬编码进来，0.7 > 0.55 → refused False → 本用例变红。
     monkeypatch.setattr(refusal.settings, "retrieval_min_score", 0.9)
-    assert retrieval_gate(VECTOR, [_ev(1, 0.5)]).refused is True
+    assert retrieval_gate(VECTOR, [_ev(1, 0.7)]).refused is True
+
+    # 反方向也要钉住：否则一个「无条件拒答」的实现照样能过上面那条。
+    monkeypatch.setattr(refusal.settings, "retrieval_min_score", 0.4)
+    assert retrieval_gate(VECTOR, [_ev(1, 0.5)]).refused is False
 
 
 def test_self_check_gate_refuses_with_model_reason():
