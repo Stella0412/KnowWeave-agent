@@ -47,6 +47,23 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     retrieval_min_score: float = 0.55
 
+    # ch04 混合检索与重排（spec §4）
+    recall_top_k: int = 50          # 每路召回条数
+    rrf_k: int = 60                 # RRF 平滑常数
+    rerank_top_n: int = 10          # 精排后进 prompt 的条数
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    # 留空即复用 embed_base_url / embed_api_key（沿用仓库既有命名约定，故给 alias）
+    rerank_base_url: str = Field(
+        "", validation_alias=AliasChoices("rerank_base_url", "RERANK_BASE_URL")
+    )
+    rerank_api_key: str = Field(
+        "", validation_alias=AliasChoices("rerank_api_key", "RERANK_API_KEY")
+    )
+    rerank_timeout: float = 20.0
+    rerank_min_score: float = 0.10  # 拒答闸门阈值（附录 A.5 实测初值，Task 23 复标）
+    rag_strategy: str = "hybrid_rerank"   # 生产策略
+    rag_tool_timeout: float = 30.0  # query_faq 专用工具超时（见 Task 15 说明）
+
     # 切分（四项：目标 / 硬上限 / 重叠 / 表格单块最大行数）
     chunk_target_tokens: int = 500
     chunk_max_tokens: int = 800

@@ -14,7 +14,7 @@ def _clean_config_env(monkeypatch):
     读到的仍是本机 .env 的值，「默认值」断言随本机配置漂移。故本文件先清掉相关环境变量。
     """
     for key in list(os.environ):
-        if key.startswith(("MYSQL_", "TOOL_", "LLM_", "TOKEN_", "EMBED", "MILVUS_")):
+        if key.startswith(("MYSQL_", "TOOL_", "LLM_", "TOKEN_", "EMBED", "MILVUS_", "RERANK_", "RAG_")):
             monkeypatch.delenv(key, raising=False)
 
 
@@ -97,3 +97,26 @@ def test_settings_mysql_from_env(monkeypatch):
     assert s.mysql_port == 3307
     assert s.mysql_password == "p@ss"
     assert s.tool_timeout == 8.0
+
+
+def test_ch04_rag_defaults():
+    s = Settings(_env_file=None)
+    assert s.recall_top_k == 50
+    assert s.rrf_k == 60
+    assert s.rerank_top_n == 10
+    assert s.rerank_model == "BAAI/bge-reranker-v2-m3"
+    assert s.rerank_base_url == ""      # 空 = 复用 embed_base_url
+    assert s.rerank_api_key == ""       # 空 = 复用 embed_api_key
+    assert s.rerank_min_score == 0.10
+    assert s.rag_strategy == "hybrid_rerank"
+    # ch03 的 dense 单路参数必须保留（纯向量策略与 ch03 的 eval_retrieval.py 仍用）
+    assert s.retrieval_top_k == 5
+    assert 0.0 < s.retrieval_min_score < 1.0
+
+
+def test_rerank_settings_read_repo_env_names(monkeypatch):
+    monkeypatch.setenv("RERANK_BASE_URL", "https://example.invalid/v1")
+    monkeypatch.setenv("RERANK_API_KEY", "sk-test")
+    s = Settings(_env_file=None)
+    assert s.rerank_base_url == "https://example.invalid/v1"
+    assert s.rerank_api_key == "sk-test"
