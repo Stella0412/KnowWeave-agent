@@ -1,0 +1,214 @@
+"""在线管线编排：改写 → 过滤 → 召回 → 融合 → 精排 → 装配 → 闸门。
+
+`query_faq` 与评估脚本都调这一个 `run_pipeline` —— 评估测的必须就是线上那条链（spec §16）。
+
+**同步函数**：整条链（embed / Milvus / rerank / LLM）都是阻塞 HTTP，调用方用
+`asyncio.to_thread` 包一层；这样评估脚本可以直接调，不必先学会 async。
+
+依赖注入（embed / milvus / reranker / model）全部可换：单测用假件，生产用单例。
+"""
+
+import logging
+from dataclasses import dataclass, field
+
+from app.config import settings
+from app.kb.sources import source_files_by_root
+from app.rag.evidence import Evidence, assemble, build_evidence_block, to_citations
+from app.rag.refusal import (
+    SOURCE_RETRIEVAL,
+    SOURCE_SELF_CHECK,
+    RefusalDecision,
+    retrieval_gate,
+    self_check_gate,
+)
+from app.rag.rerank import RerankError, build_rerank_client
+from app.rag.rewrite import RewriteResult, build_bm25_query, rewrite_query
+from app.rag.strategies import embed_query, has_rerank, is_valid, recall
+
+logger = logging.getLogger(__name__)
+
+# 超长粘贴文本先截断再检索：BM25 分词与向量化都不该吃下整篇文档（Review Focus 4）
+_QUERY_MAX_LENGTH = 2000
+
+
+@dataclass
+class TurnContext:
+    """本轮会话的侧信道：用户原话 + 证据采集器 + 文档 H1→文件名反查表。
+
+    由 ChatService 每轮建一个，传给 build_tools，query_faq 把证据写进来，
+    流结束时 ChatService 取出推 citations 事件（spec §11）。
+    """
+
+    raw_question: str
+    conversation_id: int | None = None
+    citations: list[dict] = field(default_factory=list)
+    source_files: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RagResult:
+    refused: bool
+    raw_query: str
+    strategy: str
+    standard_query: str = ""
+    refusal_source: str | None = None
+    refusal_reason: str | None = None
+    evidence_text: str = ""
+    citations: list[dict] = field(default_factory=list)
+    items: list[Evidence] = field(default_factory=list)
+    rewrite_degraded: bool = False
+    rerank_degraded: bool = False
+
+
+def _refused(raw_query: str, strategy: str, decision: RefusalDecision, **extra) -> RagResult:
+    return RagResult(
+        refused=True, raw_query=raw_query, strategy=strategy,
+        refusal_source=decision.source, refusal_reason=decision.reason, **extra,
+    )
+
+
+def run_pipeline(
+    raw_query: str,
+    *,
+    strategy: str | None = None,
+    filters: dict[str, str | list[str]] | None = None,
+    embed=None,
+    milvus=None,
+    reranker=None,
+    model=None,
+    source_files: dict[str, str] | None = None,
+    recall_top_k: int | None = None,
+    rerank_top_n: int | None = None,
+    rrf_k: int | None = None,
+) -> RagResult:
+    """跑一轮检索 + 质控，返回带引用的证据文本或拒答结论。
+
+    抛 `MilvusError` 一类底层异常时**不吞**：那是「知识库不可用」，与「查不到依据」是两回事，
+    由调用方（`query_faq`）映射成 UNAVAILABLE（Review Focus 1）。
+    """
+    query = (raw_query or "").strip()[:_QUERY_MAX_LENGTH]
+    chosen = strategy or settings.rag_strategy
+    if not is_valid(chosen):
+        raise ValueError(f"未知检索策略：{chosen}")
+    if not query:
+        return _refused(
+            query, chosen, RefusalDecision(True, SOURCE_RETRIEVAL, "问题为空，无法检索")
+        )
+
+    top_k = recall_top_k or settings.recall_top_k
+    rrf = rrf_k or settings.rrf_k
+    rerank_n = rerank_top_n or settings.rerank_top_n
+
+    # 1. 改写（失败退回原话）
+    rewrite = rewrite_query(query, model=model)
+    bm25_query = build_bm25_query(query, rewrite)
+    dense_vector = embed_query(rewrite.standard_query or query, embeddings=embed)
+
+    # 2. 召回（过滤表达式挂在每一路）
+    candidates = recall(
+        chosen, dense_vector=dense_vector, bm25_query=bm25_query,
+        top_k=top_k, rrf_k=rrf, filters=filters, milvus=milvus,
+    )
+
+    # 3. 精排（失败降级为不重排）
+    rerank_degraded = False
+    rerank_score: float | None = None
+    items = candidates
+    if has_rerank(chosen) and candidates:
+        try:
+            client = reranker or build_rerank_client()
+            ranked = client.rerank(
+                rewrite.standard_query or query,
+                [candidate.rerank_text for candidate in candidates],
+                top_n=rerank_n,
+            )
+            items, rerank_score = _apply_rerank(candidates, ranked)
+            # 精排没真的生效（上游返回空表 / 下标全非法）同样是「降级」，flag 必须对得上
+            # 实际发生了什么（Ruling R1）：这条路径上 rerank_score 必为 None。
+            rerank_degraded = rerank_score is None
+        except RerankError:
+            logger.warning("精排不可用，降级为 RRF 顺序", exc_info=True)
+            rerank_degraded = True
+            items = candidates[:rerank_n]
+            rerank_score = None
+
+    # 4. 检索侧早拒
+    decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
+    if decision.refused:
+        return _refused(
+            query, chosen, decision,
+            standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
+            rerank_degraded=rerank_degraded,
+        )
+
+    # 5. 首尾装配 + 编号
+    assembled = assemble(items)
+    evidence_text = build_evidence_block(assembled)
+    citations = to_citations(assembled, source_files)
+
+    # 6. 生成前自评（拿**用户原话**，不是改写后的问法；失败视为够答）
+    sufficient, reason = _self_check(query, evidence_text, model=model)
+    if sufficient is None:
+        logger.warning("自评失败，按「够答」继续（不因一次抖动把能答的问题拒掉）")
+    else:
+        check = self_check_gate(sufficient, reason)
+        if check.refused:
+            return _refused(
+                query, chosen, check,
+                standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
+                rerank_degraded=rerank_degraded,
+            )
+
+    return RagResult(
+        refused=False, raw_query=query, strategy=chosen,
+        standard_query=rewrite.standard_query, evidence_text=evidence_text,
+        citations=citations, items=assembled, rewrite_degraded=rewrite.degraded,
+        rerank_degraded=rerank_degraded,
+    )
+
+
+def _apply_rerank(
+    candidates: list[Evidence], ranked: list[tuple[int, float]]
+) -> tuple[list[Evidence], float | None]:
+    """按精排结果重排候选：`ranked` 是 [(原候选下标, 相关性分)]，分即 Evidence.score。
+
+    返回 `(进 prompt 的证据, 精排最高分)`，**两个值必须一起给**（Ruling R1）：
+    调用方一旦只拿到证据，就只能从 items 的 score 反推精排分，而 items 在兜底路径上
+    就是原始 candidates —— 那批 score 是 hybrid_search 的 RRF 名次倒数（≈0.016~0.033），
+    混进精排闸门会把每一道题都拒掉。所以**精排没真的生效时（`ranked` 空表、或下标全非法），
+    精排分必须返回 None**，让闸门知道「这是降级，别比精排阈值」。
+    """
+    picked = []
+    for index, score in ranked:
+        if 0 <= index < len(candidates):
+            candidate = candidates[index]
+            candidate.score = score      # 生产策略下 score 的语义 = 精排相关性分
+            picked.append(candidate)
+    if not picked:
+        return candidates, None
+    return picked, max(candidate.score for candidate in picked)
+
+
+def _self_check(
+    raw_query: str, evidence_text: str, *, model=None
+) -> tuple[bool | None, str]:
+    """返回 (sufficient, reason)；`sufficient=None` 表示自评没跑成。"""
+    from app.core.llm import build_structured_model
+    from app.prompts.rag import SelfCheckOutput, self_check_messages
+
+    try:
+        checker = model or build_structured_model(settings, SelfCheckOutput)
+        output = checker.invoke(self_check_messages(raw_query, evidence_text))
+    except Exception:
+        logger.warning("生成前自评失败", exc_info=True)
+        return None, ""
+    return bool(getattr(output, "sufficient", False)), str(getattr(output, "reason", "") or "")
+
+
+def default_source_files() -> dict[str, str]:
+    """文档 H1 → 文件名，用来给引用面板反查「查看源文档」入口。取不到就返回空表。"""
+    try:
+        return source_files_by_root(settings.kb_docs_dir)
+    except Exception:
+        logger.warning("读取 KB 文件清单失败，引用面板不给源文件入口", exc_info=True)
+        return {}
