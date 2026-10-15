@@ -23,6 +23,8 @@ def test_tables_registered():
         "tickets",
         "knowledge_chunks",
         "qa_extraction_staging",
+        "low_confidence_questions",
+        "faith_cases",
     }
 
 
@@ -146,3 +148,50 @@ async def test_staging_roundtrip(session_factory):
     async with session_factory() as s:
         row = (await s.execute(select(QAExtractionStaging))).scalars().one()
         assert row.status is StagingStatus.EXTRACTED
+
+
+def test_knowledge_chunk_has_row_category():
+    cols = {c.name for c in KnowledgeChunk.__table__.columns}
+    assert "row_category" in cols
+    assert KnowledgeChunk.__table__.columns["row_category"].nullable is True
+    assert KnowledgeChunk.__table__.columns["row_category"].type.length == 64
+
+
+def test_low_confidence_question_columns():
+    from app.db.models import LowConfidenceQuestion, LowConfidenceSource
+
+    cols = {c.name for c in LowConfidenceQuestion.__table__.columns}
+    assert {"id", "conversation_id", "raw_question", "source", "reason", "created_at"} <= cols
+    assert {m.value for m in LowConfidenceSource} == {
+        "retrieval_low_conf", "self_check", "user_feedback",
+    }
+
+
+def test_faith_case_columns_and_status_values():
+    from app.db.models import FaithCase, FaithCaseStatus
+
+    cols = {c.name for c in FaithCase.__table__.columns}
+    assert {
+        "id", "eval_id", "bucket", "query", "strategy", "answer", "reason", "citations",
+        "judge_model", "status", "seen_count", "first_seen_at", "last_seen_at",
+        "resolution", "resolved_at",
+    } <= cols
+    assert {m.value for m in FaithCaseStatus} == {"未解决", "已解决", "无需解决"}
+    assert FaithCase.__table__.columns["eval_id"].unique is True
+
+
+@pytest.mark.asyncio
+async def test_faith_cases_roundtrip_chinese_status(session_factory):
+    """中文枚举值的往返：DDL 里 status 存的就是这三个中文串，ORM 必须原样存回去。"""
+    from app.db.models import FaithCase, FaithCaseStatus
+
+    async with session_factory() as session:
+        session.add(FaithCase(
+            eval_id="B03", bucket="B_model", query="型号?", answer="答案",
+            reason="编在哪一句", status=FaithCaseStatus.OPEN,
+        ))
+        await session.commit()
+    async with session_factory() as session:
+        row = (await session.execute(select(FaithCase))).scalar_one()
+    assert row.status is FaithCaseStatus.OPEN
+    assert row.seen_count == 1

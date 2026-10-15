@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -129,6 +130,9 @@ class KnowledgeChunk(Base):
     # 以下四类元数据只存不进向量
     section_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 分类维度表按行拆时该行分类列的取值（ch04 新增；⚠️ 唯一一列偏离 ch03「不加列不改列」，
+    # 已获用户批准。必须落库：值在切分时才知道，chunk 切好后无法从正文反推，只写 Milvus 重建即丢）
+    row_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_key_clause: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     prev_chunk_id: Mapped[int | None] = mapped_column(
         BIGINT, ForeignKey("knowledge_chunks.id", ondelete="SET NULL"), nullable=True
@@ -163,3 +167,64 @@ class QAExtractionStaging(Base):
         index=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class LowConfidenceSource(str, enum.Enum):
+    """入池入口。user_feedback 本章不写，留给 ch09 的满意度反馈落库。"""
+
+    RETRIEVAL_LOW_CONF = "retrieval_low_conf"
+    SELF_CHECK = "self_check"
+    USER_FEEDBACK = "user_feedback"
+
+
+class FaithCaseStatus(str, enum.Enum):
+    OPEN = "未解决"
+    RESOLVED = "已解决"
+    NOT_NEEDED = "无需解决"
+
+
+class LowConfidenceQuestion(Base):
+    """低置信度问题池：答不出来的原话落这里，是 ch09 数据飞轮的入口。"""
+
+    __tablename__ = "low_confidence_questions"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("conversations.id"), nullable=True, index=True
+    )
+    raw_question: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[LowConfidenceSource] = mapped_column(
+        Enum(LowConfidenceSource, values_callable=lambda e: [m.value for m in e]), index=True
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FaithCase(Base):
+    """忠实度编造个案台账：一题一行，跨轮追溯同一道题反复被判编造。"""
+
+    __tablename__ = "faith_cases"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    eval_id: Mapped[str] = mapped_column(String(16), unique=True)
+    bucket: Mapped[str] = mapped_column(String(24))
+    query: Mapped[str] = mapped_column(String(512))
+    strategy: Mapped[str] = mapped_column(String(24), default="hybrid_rerank")
+    answer: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    # 这一轮喂给模型的 Top-K 证据全集快照（不只存被引用的那几条：手里有哪几条、实际引了哪几条
+    # 都是判断依据），形状与 SSE citations 载荷一致
+    citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[FaithCaseStatus] = mapped_column(
+        Enum(FaithCaseStatus, values_callable=lambda e: [m.value for m in e]),
+        default=FaithCaseStatus.OPEN,
+        index=True,
+    )
+    seen_count: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), index=True
+    )
+    resolution: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

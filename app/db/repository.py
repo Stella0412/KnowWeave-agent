@@ -120,6 +120,7 @@ class KnowledgeRepository:
                 section_path=c.section_path,
                 content_type=c.content_type,
                 is_key_clause=c.is_key_clause,
+                row_category=getattr(c, "row_category", None),
                 vectorize_status=status,
             )
             for c in chunks
