@@ -11,6 +11,16 @@ def unit(axis: int) -> list[float]:
     return vec
 
 
+def row(i, vector, question="问", answer="答", **meta):
+    data = {
+        "id": i, "vector": vector, "text": f"{question} {answer}", "question": question,
+        "answer": answer, "category": "", "content_type": "md", "section_path": "",
+        "row_category": "", "is_key_clause": False,
+    }
+    data.update(meta)
+    return data
+
+
 @pytest.fixture
 def store(tmp_path):
     s = MilvusKnowledgeClient(uri=str(tmp_path / "kb.db"), collection="knowledge", dim=DIM)
@@ -25,18 +35,18 @@ def test_ensure_collection_is_idempotent(store):
 
 
 def test_upsert_then_count(store):
-    store.upsert([1, 2], [unit(0), unit(1)], ["甲", "乙"], ["答甲", "答乙"])
+    store.upsert([row(1, unit(0), "甲", "答甲"), row(2, unit(1), "乙", "答乙")])
     assert store.count() == 2
 
 
 def test_upsert_same_id_is_idempotent(store):
-    store.upsert([1], [unit(0)], ["甲"], ["答甲"])
-    store.upsert([1], [unit(1)], ["甲"], ["答甲"])
+    store.upsert([row(1, unit(0), "甲", "答甲")])
+    store.upsert([row(1, unit(1), "甲", "答甲")])
     assert store.count() == 1
 
 
 def test_search_returns_id_question_answer_score(store):
-    store.upsert([10, 11], [unit(0), unit(1)], ["问甲", "问乙"], ["答甲", "答乙"])
+    store.upsert([row(10, unit(0), "问甲", "答甲"), row(11, unit(1), "问乙", "答乙")])
     hits = store.search(unit(0), top_k=2)
     assert hits[0]["id"] == 10
     assert hits[0]["question"] == "问甲"
@@ -46,13 +56,13 @@ def test_search_returns_id_question_answer_score(store):
 
 
 def test_delete_ids(store):
-    store.upsert([1, 2, 3], [unit(0), unit(1), unit(2)], ["a", "b", "c"], ["x", "y", "z"])
+    store.upsert([row(1, unit(0), "a", "x"), row(2, unit(1), "b", "y"), row(3, unit(2), "c", "z")])
     store.delete_ids([2])
     assert store.count() == 2
 
 
 def test_delete_ids_empty_is_noop(store):
-    store.upsert([1], [unit(0)], ["a"], ["x"])
+    store.upsert([row(1, unit(0), "a", "x")])
     store.delete_ids([])
     assert store.count() == 1
 
@@ -82,7 +92,9 @@ c = MilvusKnowledgeClient(uri=uri, collection="knowledge", dim=dim)
 c.ensure_collection()
 vec = [0.0] * dim
 vec[0] = 1.0
-c.upsert([1], [vec], ["问甲"], ["答甲"])
+c.upsert([{"id": 1, "vector": vec, "text": "问甲 答甲", "question": "问甲", "answer": "答甲",
+           "category": "", "content_type": "md", "section_path": "", "row_category": "",
+           "is_key_clause": False}])
 c.close()
 """
 
