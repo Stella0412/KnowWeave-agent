@@ -17,3 +17,11 @@ def test_mine_qa_args_defaults():
     args = parse_mine_args([])
     assert args.batch_size is None
     assert args.run_id is None
+
+
+def test_rebuild_kb_args_defaults():
+    from app.jobs.rebuild_kb import parse_args
+
+    args = parse_args([])
+    assert args.docs_dir is None
+    assert args.yes is False
