@@ -107,7 +107,7 @@ def test_ch04_rag_defaults():
     assert s.rerank_model == "BAAI/bge-reranker-v2-m3"
     assert s.rerank_base_url == ""      # 空 = 复用 embed_base_url
     assert s.rerank_api_key == ""       # 空 = 复用 embed_api_key
-    assert s.rerank_min_score == 0.10
+    assert s.rerank_min_score == 0.25
     assert s.rag_strategy == "hybrid_rerank"
     # ch03 的 dense 单路参数必须保留（纯向量策略与 ch03 的 eval_retrieval.py 仍用）
     assert s.retrieval_top_k == 5

@@ -60,7 +60,7 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("rerank_api_key", "RERANK_API_KEY")
     )
     rerank_timeout: float = 20.0
-    rerank_min_score: float = 0.10  # 拒答闸门阈值（附录 A.5 实测初值，Task 23 复标）
+    rerank_min_score: float = 0.25  # 拒答闸门阈值（2026-10-17 用 39 题评估集在 chunk 粒度复标）
     rag_strategy: str = "hybrid_rerank"   # 生产策略
     rag_tool_timeout: float = 30.0  # query_faq 专用工具超时（见 Task 15 说明）
 
