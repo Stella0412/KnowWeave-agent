@@ -17,11 +17,23 @@ from app.rag.strategies import VECTOR, has_rerank
 SOURCE_RETRIEVAL = "retrieval_low_conf"
 SOURCE_SELF_CHECK = "self_check"
 
-# 拒答话术：明确说明没依据 + 给可转人工的出口。不硬编政策细节，也不许模型自己补常识
-REFUSAL_TEXT = (
-    "抱歉，知识库里没有查到相关依据，我无法确认这个问题的答案。"
-    "建议您联系人工客服核实，人工客服服务时间为每日 9:00 至 22:00。"
-)
+def refusal_text(question: str | None = None) -> str:
+    """拒答话术：说「暂时没查到『用户问题』的相关信息」+ 给可转人工的出口。
+
+    不暴露内部「知识库」概念，也不硬编政策细节；问题过长时截断，避免整段回复被问句淹没。
+    """
+    q = " ".join((question or "").split())
+    if len(q) > 40:
+        q = q[:40] + "…"
+    subject = f"「{q}」的相关信息" if q else "相关问题的信息"
+    return (
+        f"抱歉，暂时没有查到{subject}。"
+        "建议您联系人工客服核实，人工客服服务时间为每日 9:00 至 22:00。"
+    )
+
+
+# 没有具体问句的调用方（评估脚本等）用默认话术
+REFUSAL_TEXT = refusal_text()
 
 
 @dataclass(frozen=True)

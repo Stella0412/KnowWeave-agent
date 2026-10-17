@@ -9,7 +9,7 @@ from app.core.retrieval import UNAVAILABLE
 from app.db.models import ConversationStatus
 from app.db.repository import ChatRepository, LowConfidenceRepository
 from app.rag.pipeline import RagResult, TurnContext, default_source_files, run_pipeline
-from app.rag.refusal import REFUSAL_TEXT, pool_record
+from app.rag.refusal import pool_record, refusal_text
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseToo
     """入参/出参契约不变：模型只填 keyword，返回可直接念给用户的文本。
 
     内脏从 ch03 的 dense 单路换成 app/rag 的完整管线（混合检索 + 精排 + 引用编号 + 两段拒答）。
-    拒答时返回 REFUSAL_TEXT 而不是空串：模型拿到一句明确的「没查到依据」才会照实说，
+    拒答时返回带用户问题的拒答话术而不是空串：模型拿到一句明确的「暂时没查到」才会照实说，
     拿到空串它反而容易用自己的常识补全。
     """
 
@@ -69,7 +69,8 @@ def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseToo
 
         if result.refused:
             await _record_low_confidence(session_factory, turn, result)
-            return REFUSAL_TEXT
+            raw_question = turn.raw_question if turn is not None else ""
+            return refusal_text(raw_question or keyword)
 
         if turn is not None:
             turn.citations.extend(result.citations)

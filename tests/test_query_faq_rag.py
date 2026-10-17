@@ -2,7 +2,6 @@ import app.tools.business as business
 from app.core.retrieval import UNAVAILABLE
 from app.rag.evidence import Evidence
 from app.rag.pipeline import RagResult, TurnContext
-from app.rag.refusal import REFUSAL_TEXT
 
 
 def _result(**over):
@@ -58,7 +57,9 @@ async def test_query_faq_refusal_returns_refusal_text_and_writes_pool(monkeypatc
     turn = TurnContext(raw_question="今天天气怎么样", conversation_id=9)
     tool = business.build_query_faq(session_factory=FakeSession, turn=turn)
     out = await tool.ainvoke({"keyword": "今天天气怎么样"})
-    assert out == REFUSAL_TEXT
+    assert "「今天天气怎么样」" in out
+    assert "暂时" in out
+    assert "知识库" not in out
     assert written == [(9, "今天天气怎么样", "retrieval_low_conf", "召回结果为空")]
     assert turn.citations == []
 
@@ -86,7 +87,8 @@ async def test_query_faq_pool_write_failure_does_not_break_the_answer(monkeypatc
     monkeypatch.setattr(business, "LowConfidenceRepository", BoomRepo)
 
     tool = business.build_query_faq(session_factory=FakeSession, turn=TurnContext(raw_question="x"))
-    assert await tool.ainvoke({"keyword": "x"}) == REFUSAL_TEXT
+    out = await tool.ainvoke({"keyword": "x"})
+    assert "「x」" in out
 
 
 async def test_query_faq_does_not_raise_on_pipeline_failure(monkeypatch):

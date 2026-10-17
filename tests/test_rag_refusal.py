@@ -4,6 +4,7 @@ from app.rag.refusal import (
     SOURCE_RETRIEVAL,
     SOURCE_SELF_CHECK,
     pool_record,
+    refusal_text,
     retrieval_gate,
     self_check_gate,
 )
@@ -94,3 +95,19 @@ def test_pool_record_shape_matches_repository_add():
 def test_refusal_text_is_actionable_and_mentions_human():
     assert "未查到" in REFUSAL_TEXT or "没有查" in REFUSAL_TEXT
     assert "人工" in REFUSAL_TEXT
+    assert "知识库" not in REFUSAL_TEXT
+
+
+def test_refusal_text_embeds_the_user_question():
+    text = refusal_text("你们支持货到付款吗")
+    assert "「你们支持货到付款吗」" in text
+    assert "暂时" in text
+    assert "人工" in text
+    assert "知识库" not in text
+
+
+def test_refusal_text_without_question_stays_generic():
+    text = refusal_text(None)
+    assert "没有查到" in text
+    assert "人工" in text
+    assert "None" not in text
