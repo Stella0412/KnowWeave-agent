@@ -298,3 +298,29 @@ def test_turn_context_collects_citations():
     ctx.citations.extend(result.citations)
     assert ctx.citations[0]["n"] == 1
     assert ctx.conversation_id == 7
+
+
+def test_rerank_stage_contract():
+    """精排段的契约：返回 (重排后证据, 精排最高分, 是否降级)，不打网络。"""
+    from app.rag.pipeline import rerank_stage
+
+    candidates = [
+        Evidence(id=i, question=f"q{i}", answer=f"a{i}", section_path="甲 > 乙",
+                 content_type="faq", row_category="", category="", score=0.0)
+        for i in range(3)
+    ]
+    # scores 下标即候选下标：候选 1 最相关、候选 2 次之、候选 0 最末
+    items, score, degraded = rerank_stage(
+        candidates, "问", reranker=FakeReranker(scores=[0.1, 0.9, 0.5])
+    )
+    assert [c.id for c in items] == [1, 2, 0]      # 按精排分降序
+    assert score == 0.9
+    assert degraded is False
+
+    # 上游挂 → 降级为「不重排 + 截到 top_n」，且必须 degraded=True（Ruling R1 的两值契约）
+    items, score, degraded = rerank_stage(
+        candidates, "问", reranker=FakeReranker(boom=RerankError("503")), top_n=2
+    )
+    assert [c.id for c in items] == [0, 1]
+    assert score is None
+    assert degraded is True

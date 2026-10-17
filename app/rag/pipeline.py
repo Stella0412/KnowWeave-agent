@@ -115,28 +115,9 @@ def run_pipeline(
     rerank_score: float | None = None
     items = candidates
     if has_rerank(chosen) and candidates:
-        try:
-            client = reranker or build_rerank_client()
-            ranked = client.rerank(
-                rewrite.standard_query or query,
-                [candidate.rerank_text for candidate in candidates],
-                top_n=rerank_n,
-            )
-            items, rerank_score = _apply_rerank(candidates, ranked)
-            # 精排没真的生效（上游返回空表 / 下标全非法）同样是「降级」：证据条数必须与
-            # 下面 RerankError 那条路径**一致**（都截到 rerank_n）。`_apply_rerank` 在
-            # picked 为空时返回的是**原始候选全集**（recall_top_k 默认 50），不截的话
-            # 同一个「精排没生效」情形会往 prompt 里塞 50 条、引用面板推 50 条角标，
-            # 而另一条降级路径只塞 10 条 —— 两条路给两个答案。
-            # 拒答判定不受影响：rerank_score 仍是 None（Ruling R1）。
-            if rerank_score is None:
-                items = candidates[:rerank_n]
-            rerank_degraded = rerank_score is None
-        except RerankError:
-            logger.warning("精排不可用，降级为 RRF 顺序", exc_info=True)
-            rerank_degraded = True
-            items = candidates[:rerank_n]
-            rerank_score = None
+        items, rerank_score, rerank_degraded = rerank_stage(
+            candidates, rewrite.standard_query or query, reranker=reranker, top_n=rerank_n
+        )
 
     # 4. 检索侧早拒
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
@@ -171,6 +152,42 @@ def run_pipeline(
         citations=citations, items=assembled, rewrite_degraded=rewrite.degraded,
         rerank_degraded=rerank_degraded,
     )
+
+
+def rerank_stage(
+    candidates: list[Evidence],
+    query: str,
+    *,
+    reranker=None,
+    top_n: int | None = None,
+) -> tuple[list[Evidence], float | None, bool]:
+    """精排一段候选：返回 `(进 prompt 的证据, 精排最高分, 是否降级)`。
+
+    `run_pipeline` 与检索段评估脚本**共用这一个函数** —— 评估要测的必须就是线上那条链
+    （spec §16）。谁都不许另写一份等价实现：复制品会在管线变更时静默漂移。
+
+    调用方只在 `candidates` 非空时调它（`run_pipeline` 的
+    `if has_rerank(chosen) and candidates:` 里那个 `and` 就是干这个的）。
+    """
+    rerank_n = top_n or settings.rerank_top_n
+    try:
+        client = reranker or build_rerank_client()
+        ranked = client.rerank(
+            query, [candidate.rerank_text for candidate in candidates], top_n=rerank_n
+        )
+        items, rerank_score = _apply_rerank(candidates, ranked)
+        # 精排没真的生效（上游返回空表 / 下标全非法）同样是「降级」：证据条数必须与
+        # 下面 RerankError 那条路径**一致**（都截到 rerank_n）。`_apply_rerank` 在
+        # picked 为空时返回的是**原始候选全集**（recall_top_k 默认 50），不截的话
+        # 同一个「精排没生效」情形会往 prompt 里塞 50 条、引用面板推 50 条角标，
+        # 而另一条降级路径只塞 10 条 —— 两条路给两个答案。
+        # 拒答判定不受影响：rerank_score 仍是 None（Ruling R1）。
+        if rerank_score is None:
+            items = candidates[:rerank_n]
+        return items, rerank_score, rerank_score is None
+    except RerankError:
+        logger.warning("精排不可用，降级为 RRF 顺序", exc_info=True)
+        return candidates[:rerank_n], None, True
 
 
 def _apply_rerank(
