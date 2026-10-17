@@ -136,6 +136,29 @@
   .msg.assistant .body h2 { font-size: 1.25em; }
   .msg.assistant .body h3 { font-size: 1.1em; }
   .msg.assistant .body h4 { font-size: 1em; }
+  /* 满意度反馈（纯前端 state，不发请求、不落库） */
+  .feedback {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .fb-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 1px 5px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.4;
+    cursor: pointer;
+    opacity: .7;
+    transition: opacity .15s ease, background .15s ease;
+  }
+  .fb-btn:hover { background: #fff1e6; opacity: 1; }
+  .fb-btn.active { color: var(--brand); font-weight: 600; opacity: 1; }
+  .feedback.locked .fb-btn:not(.active) { opacity: .35; cursor: default; }
+  .fb-tip { font-size: 12px; color: var(--muted); }
+
   .bubble .error { color: #d93a3a; margin-top: 6px; }
 
   /* 流式光标 */
@@ -195,6 +218,88 @@
     border: 1px solid #ffd7bf;
     font-size: 12px;
   }
+  /* ---- 引用编号与便利贴 ---- */
+  .cite-chip {
+    display: inline-block;
+    margin: 0 1px;
+    padding: 0 5px;
+    border: 1px solid var(--brand);
+    border-radius: 999px;
+    background: #fff1e6;
+    color: var(--brand);
+    font-size: 12px;
+    line-height: 18px;
+    cursor: pointer;
+    vertical-align: 1px;
+  }
+  .cite-chip:hover { background: var(--brand); color: #fff; }
+  .cite-chip.missing {
+    border-color: #ddd;
+    background: #f3f3f3;
+    color: var(--muted);
+    cursor: default;
+  }
+
+  .cite-sticky {
+    position: fixed;
+    z-index: 50;
+    width: min(340px, calc(100vw - 24px));
+    max-height: 60vh;
+    overflow: auto;
+    box-sizing: border-box;
+    padding: 14px 16px 16px;
+    background: #fff7c2;
+    border: 1px solid #f0e08a;
+    border-radius: 4px 4px 3px 14px;
+    box-shadow: 0 10px 26px rgba(120, 100, 0, .22), 0 2px 4px rgba(0, 0, 0, .08);
+    transform: rotate(-.6deg);
+    color: #5a4a00;
+    font-size: 13px;
+    line-height: 1.55;
+    animation: stickyIn .14s ease-out;
+  }
+  @keyframes stickyIn {
+    from { opacity: 0; transform: rotate(-.6deg) translateY(4px) scale(.98); }
+    to   { opacity: 1; transform: rotate(-.6deg) translateY(0) scale(1); }
+  }
+  .cite-sticky::after {           /* 便利贴底部卷角 */
+    content: '';
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 18px;
+    height: 18px;
+    background: linear-gradient(135deg, transparent 50%, #f3e57d 50%);
+    border-radius: 0 0 14px 0;
+  }
+  .cite-sticky .sticky-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    font-weight: 700;
+    color: #6b5700;
+  }
+  .cite-sticky .sticky-close {
+    flex: none;
+    border: 0;
+    background: transparent;
+    color: #9a8400;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .cite-sticky .sticky-close:hover { color: #3d3300; }
+  .cite-sticky .sticky-source { margin: 6px 0 0; font-size: 11px; color: #9a8400; }
+  .cite-sticky .sticky-body {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+    font-size: 13px;
+    color: #4f4300;
+  }
 </style>
 </head>
 <body>
@@ -246,6 +351,34 @@
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // 小节标题前配一个 emoji，正文解释不加。
+  // 标题形如「**退货政策**」或「### 退货政策」，按标题里命中的关键词选图标。
+  const KEYWORD_EMOJI = [
+    ['退货', '📦'], ['退换货', '🔄'], ['换货', '🔄'], ['退款', '💰'],
+    ['处理时效', '⏱️'], ['时效', '⏱️'], ['运费', '🚚'], ['包邮', '📦'],
+    ['发票', '🧾'], ['保修', '🔧'], ['积分', '⭐'], ['会员', '👑'],
+    ['发货', '📮'], ['物流', '🚚'], ['破损', '⚠️'], ['优惠券', '🎟️'],
+  ];
+
+  function decorateTitle(text) {
+    const trimmed = text.trimStart();
+    const cp = trimmed ? trimmed.codePointAt(0) : 0;
+    const isEmoji = (cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2190 && cp <= 0x23FF)
+      || (cp >= 0x2600 && cp <= 0x27BF) || (cp >= 0x2B00 && cp <= 0x2BFF);
+    if (isEmoji) return text; // 模型已经带了 emoji 就不重复
+
+    const plain = text.replace(/^\s*\d+[.)]\s*/, ''); // 找关键词时忽略序号
+    let best = null;
+    for (const [kw, emoji] of KEYWORD_EMOJI) {
+      const idx = plain.indexOf(kw);
+      if (idx === -1) continue;
+      if (!best || idx < best.idx || (idx === best.idx && kw.length > best.len)) {
+        best = { idx, len: kw.length, emoji };
+      }
+    }
+    return best ? best.emoji + ' ' + text.trimStart() : text;
+  }
+
   function inlineMd(s) {
     let out = escapeHtml(s);
     out = out.replace(/`([^`]+)`/g, '<code>$1</code>');                 // 行内代码（先处理）
@@ -269,6 +402,7 @@
     for (const rawLine of lines) {
       const line = rawLine.trimEnd();
       const head = line.match(/^\s*(#{1,6})\s+(.*)$/);
+      const section = line.match(/^\s*\*\*([^*]+)\*\*\s*[:：]?\s*$/); // 独占一行的加粗行，按小节标题处理
       const ul = line.match(/^\s*[-*]\s+(.*)$/);
       const ol = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
 
@@ -277,7 +411,12 @@
       if (head) {
         flushPara(); closeList();
         const lv = Math.min(head[1].length + 1, 6); // # → h2
-        html += '<h' + lv + '>' + inlineMd(head[2]) + '</h' + lv + '>';
+        html += '<h' + lv + '>' + inlineMd(decorateTitle(head[2])) + '</h' + lv + '>';
+        continue;
+      }
+      if (section) {
+        flushPara(); closeList();
+        html += '<h4>' + inlineMd(decorateTitle(section[1])) + '</h4>';
         continue;
       }
       if (ul) {
@@ -368,6 +507,9 @@
         }
         ctx.badge.textContent = '🔧 调用了 ' + ev.name;
         break;
+      case 'citations':
+        ctx.citations = ev.items || [];
+        break;
       case 'token':
         ctx.raw += ev.content;
         ctx.stream.textContent += ev.content; // 流式阶段纯文本逐字
@@ -383,6 +525,126 @@
     }
   }
 
+  // 把答案正文里的 [n] 变成可点标记；没有对应引用时保留灰色不可点样式
+  function linkifyCitations(body, citations) {
+    if (!citations || !citations.length) return;
+    const byN = new Map(citations.map((c) => [c.n, c]));
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const targets = [];
+    while (walker.nextNode()) {
+      if (/\[\d+\]/.test(walker.currentNode.nodeValue)) targets.push(walker.currentNode);
+    }
+    for (const node of targets) {
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      const text = node.nodeValue;
+      for (const m of text.matchAll(/\[(\d+)\]/g)) {
+        if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const item = byN.get(Number(m[1]));
+        const chip = document.createElement(item ? 'button' : 'span');
+        chip.textContent = m[0];
+        chip.className = item ? 'cite-chip' : 'cite-chip missing';
+        if (item) chip.addEventListener('click', () => openCitation(item, chip));
+        frag.appendChild(chip);
+        last = m.index + m[0].length;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+  }
+
+  // 点引用编号 → 在编号旁边贴一张「便利贴」，显示章节路径 + 来源 + chunk 原文
+  let stickyEl = null;
+
+  function closeCitation() {
+    if (stickyEl) {
+      stickyEl.remove();
+      stickyEl = null;
+    }
+  }
+
+  function openCitation(item, anchor) {
+    closeCitation();
+    const sticky = document.createElement('div');
+    sticky.className = 'cite-sticky';
+
+    const head = document.createElement('div');
+    head.className = 'sticky-head';
+    const title = document.createElement('span');
+    title.textContent = item.section_path || '(无章节路径)';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'sticky-close';
+    close.setAttribute('aria-label', '关闭');
+    close.textContent = '×';
+    close.addEventListener('click', closeCitation);
+    head.append(title, close);
+
+    const source = document.createElement('p');
+    source.className = 'sticky-source';
+    source.textContent = item.source_file ? `来源文档：${item.source_file}` : '';
+
+    const body = document.createElement('p');
+    body.className = 'sticky-body';
+    body.textContent = item.answer || '';
+
+    sticky.append(head, source, body);
+    sticky.style.visibility = 'hidden';
+    document.body.appendChild(sticky);
+    stickyEl = sticky;
+
+    // 就近贴：优先在编号下方，空间不够就翻到上方，左右夹在视口内
+    const pad = 12;
+    const gap = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = sticky.offsetWidth;
+    const h = sticky.offsetHeight;
+    const rect = anchor.getBoundingClientRect();
+    let left = rect.left + rect.width / 2 - w / 2;
+    left = Math.max(pad, Math.min(left, vw - w - pad));
+    let top = rect.bottom + gap;
+    if (top + h > vh - pad) {
+      const above = rect.top - h - gap;
+      top = above >= pad ? above : Math.max(pad, vh - h - pad);
+    }
+    sticky.style.left = `${left}px`;
+    sticky.style.top = `${top}px`;
+    sticky.style.visibility = 'visible';
+  }
+
+  // 每条正常完成的助手回答下方挂 👍/👎；纯前端一次性状态，不发请求、不落库
+  function attachFeedback(msgEl) {
+    if (!msgEl || msgEl.querySelector('.feedback')) return;
+    const box = document.createElement('div');
+    box.className = 'feedback';
+    const tip = document.createElement('span');
+    tip.className = 'fb-tip';
+    const state = { value: null };
+    const mk = (kind, label) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'fb-btn';
+      button.dataset.kind = kind;
+      button.setAttribute('aria-label', kind === 'up' ? '满意' : '不满意');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        if (state.value) return; // 一次性锁定：同一条只能反馈一次
+        state.value = kind;
+        box.classList.add('locked');
+        box.querySelectorAll('.fb-btn').forEach((b) => {
+          b.classList.toggle('active', b.dataset.kind === kind);
+        });
+        tip.textContent = '已反馈';
+      });
+      return button;
+    };
+    box.appendChild(mk('up', '👍'));
+    box.appendChild(mk('down', '👎'));
+    box.appendChild(tip);
+    msgEl.appendChild(box);
+  }
+
   // 收尾：把流式纯文本换成 Markdown 渲染后的 HTML
   function finalizeAssistant(bubbleEl, ctx) {
     if (ctx.finished) return;
@@ -393,7 +655,9 @@
     const body = document.createElement('div');
     body.className = 'body';
     body.innerHTML = renderMarkdown(ctx.raw);
+    linkifyCitations(body, ctx.citations);
     bubbleEl.appendChild(body);
+    attachFeedback(bubbleEl.parentElement);
     scrollToBottom();
   }
 
@@ -422,7 +686,7 @@
     bubble.appendChild(stream);
     bubble.appendChild(cursor);
 
-    const ctx = { raw: '', stream, finished: false };
+    const ctx = { raw: '', stream, finished: false, citations: [] };
     setSending(true);
 
     try {
@@ -471,6 +735,17 @@
   });
   inputEl.addEventListener('input', autoGrow);
   btnNew.addEventListener('click', reset);
+
+  // 点便利贴外面 / 按 Esc / 滚动聊天区时收起
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.cite-sticky') || e.target.closest('.cite-chip')) return;
+    closeCitation();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeCitation();
+  });
+  chatEl.addEventListener('scroll', closeCitation, { passive: true });
+  window.addEventListener('resize', closeCitation);
 
   reset();
 })();
