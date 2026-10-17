@@ -74,6 +74,8 @@
     transition: background .15s;
   }
   .btn-new:hover { background: rgba(255,255,255,0.28); }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
+  a.btn-new { text-decoration: none; display: inline-flex; align-items: center; }
 
   /* 消息区 */
   .chat {
@@ -316,7 +318,10 @@
           <p class="status"><span class="dot"></span>在线 · 纯对话体验版</p>
         </div>
       </div>
-      <button class="btn-new" id="btnNew">新对话</button>
+      <div class="header-actions">
+        <a class="btn-new" href="/rag-eval">评估面板</a>
+        <button class="btn-new" id="btnNew">新对话</button>
+      </div>
     </header>
 
     <main class="chat" id="chat"></main>

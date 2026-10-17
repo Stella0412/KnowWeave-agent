@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from app.config import Settings, settings
 from app.db.base import Base
 from app.db.engine import engine
-from app.routers import chat, extract
+from app.routers import chat, extract, rag_eval
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="知序智能客服", lifespan=lifespan)
 app.include_router(chat.router)
 app.include_router(extract.router)
+app.include_router(rag_eval.router)
 
 
 @app.get("/", include_in_schema=False)

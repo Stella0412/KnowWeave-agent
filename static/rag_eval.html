@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知序 · RAG 评估</title>
+<style>
+  :root {
+    --brand: #ff6f3c;
+    --brand-2: #ff9a5a;
+    --bg: #fff7f0;
+    --panel: #ffffff;
+    --ink: #3a3a3a;
+    --muted: #9b9b9b;
+    --border: #f0e6dd;
+    --ok: #2f9e63;
+    --ok-bg: #eaf7f0;
+    --bad: #d64545;
+    --bad-bg: #fdeeee;
+    --warn: #b7791f;
+    --warn-bg: #fdf3e2;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 0 20px 60px; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+    padding: 18px 22px; margin: 18px 0 16px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #ff6f3c, #ff8a5a);
+    color: #fff;
+    box-shadow: 0 8px 30px rgba(255, 111, 60, 0.16);
+  }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand .logo {
+    width: 46px; height: 46px; border-radius: 13px;
+    background: rgba(255,255,255,0.22);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 25px;
+  }
+  .brand h1 { font-size: 20px; font-weight: 650; }
+  .brand p { font-size: 12.5px; opacity: .9; margin-top: 2px; }
+  .ghost {
+    color: #fff; text-decoration: none; font-size: 13px;
+    border: 1px solid rgba(255,255,255,.6);
+    background: rgba(255,255,255,.14);
+    padding: 7px 14px; border-radius: 20px;
+  }
+  .ghost:hover { background: rgba(255,255,255,.28); }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 15px; font-weight: 650;
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 4px;
+  }
+  .card .sub { font-size: 12.5px; color: var(--muted); margin-bottom: 14px; }
+
+  /* 控制区 */
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 13px; cursor: pointer;
+    border-radius: 9px; padding: 8px 15px;
+    border: 1px solid var(--brand);
+    background: var(--brand); color: #fff;
+    transition: filter .15s, opacity .15s;
+  }
+  button.secondary { background: #fff; color: var(--brand); }
+  button:hover { filter: brightness(1.05); }
+  button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+  .run-state { font-size: 12.5px; color: var(--muted); margin-left: auto; }
+  .run-state.running { color: var(--brand); }
+  .run-state.error { color: var(--bad); }
+  .progress {
+    width: 100%; height: 7px; border-radius: 99px;
+    background: #f6ece4; overflow: hidden; margin-top: 12px;
+    display: none;
+  }
+  .progress.show { display: block; }
+  .progress .bar {
+    height: 100%; width: 0;
+    background: linear-gradient(90deg, var(--brand), var(--brand-2));
+    transition: width .4s ease;
+  }
+
+  /* 汇总卡片 */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .stat {
+    border: 1px solid var(--border); border-radius: 11px;
+    padding: 12px 14px; background: #fffdfa;
+  }
+  .stat .k { font-size: 11.5px; color: var(--muted); }
+  .stat .v { font-size: 22px; font-weight: 650; margin-top: 2px; }
+  .stat .v small { font-size: 12px; color: var(--muted); font-weight: 400; }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-size: 11.5px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .strategy-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; }
+  .strategy-name.prod { color: var(--brand); font-weight: 650; }
+  .best { color: var(--ok); font-weight: 650; }
+  .muted { color: var(--muted); }
+  .tag-prod {
+    font-size: 10.5px; color: var(--brand);
+    border: 1px solid #ffd2bf; background: #fff2ec;
+    border-radius: 5px; padding: 0 5px; margin-left: 6px;
+  }
+
+  /* 筛选 */
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .filters select, .filters input {
+    font: inherit; font-size: 12.5px; padding: 6px 9px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; color: var(--ink);
+  }
+  .filters input { min-width: 210px; }
+  .filters .count { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  /* 题目卡片 */
+  .qcard {
+    border: 1px solid var(--border); border-radius: 11px;
+    padding: 12px 14px; margin-bottom: 9px; background: #fff;
+  }
+  .qhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .qid {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11.5px; color: var(--muted); min-width: 30px;
+  }
+  .qtext { font-size: 14px; font-weight: 600; }
+  .tag {
+    font-size: 10.5px; color: #7b6a5e; background: #fbf3ec;
+    border: 1px solid var(--border); border-radius: 5px; padding: 0 6px;
+  }
+  .tag.flag { color: var(--warn); background: var(--warn-bg); border-color: #f2dfb8; }
+  .tag.good { color: var(--ok); background: var(--ok-bg); border-color: #cde9db; }
+  .tag.bad { color: var(--bad); background: var(--bad-bg); border-color: #f3cccc; }
+  .qhead .open {
+    margin-left: auto; border: none; background: none; color: var(--brand);
+    font-size: 12px; padding: 0;
+  }
+
+  .mini {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 7px; margin-top: 9px;
+  }
+  .mini > div {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 8px; font-size: 11.5px; background: #fffdfa;
+  }
+  .mini b {
+    display: block; font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11px; color: #7b6a5e; font-weight: 600; margin-bottom: 3px;
+  }
+  .mini b.prod { color: var(--brand); }
+  .mini span { display: inline-block; margin-right: 7px; color: var(--muted); }
+  .mini span strong { color: var(--ink); font-weight: 650; }
+  .rank1 { color: var(--ok); font-weight: 650; }
+  .rank-miss { color: var(--bad); font-weight: 650; }
+
+  .rankings {
+    display: grid; grid-template-columns: repeat(4, minmax(230px, 1fr));
+    gap: 10px; margin-top: 10px; padding-top: 10px;
+    border-top: 1px dashed var(--border);
+    overflow-x: auto;
+  }
+  .rankings.hidden { display: none; }
+  .rank-col h5 {
+    font-size: 11.5px; color: #7b6a5e; margin-bottom: 6px;
+    display: flex; justify-content: space-between; gap: 6px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  .rank-col h5.prod { color: var(--brand); }
+  .rank-col ol { list-style: none; }
+  .hit {
+    display: flex; gap: 6px; font-size: 11.5px;
+    padding: 4px 5px; border-radius: 6px; margin-bottom: 3px;
+    color: #6b6b6b; background: #fffdfa; border: 1px solid transparent;
+  }
+  .hit .pos { color: var(--muted); min-width: 15px; text-align: right; }
+  .hit .body { min-width: 0; }
+  .hit .path { color: var(--ink); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hit .snippet { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hit.relevant { background: var(--ok-bg); border-color: #cde9db; }
+  .hit.relevant .path { color: #22754a; font-weight: 600; }
+
+  /* 答案卡片 */
+  .acard {
+    border: 1px solid var(--border); border-left: 3px solid var(--ok);
+    border-radius: 11px; padding: 12px 14px; margin-bottom: 9px;
+  }
+  .acard.bad { border-left-color: var(--bad); }
+  .acard .answer {
+    font-size: 13px; margin-top: 8px; padding: 8px 10px;
+    background: #fffdfa; border: 1px solid var(--border); border-radius: 8px;
+    white-space: pre-wrap;
+  }
+  .facts { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .fact { font-size: 11.5px; border-radius: 5px; padding: 1px 7px; border: 1px solid; }
+  .fact.ok { color: var(--ok); background: var(--ok-bg); border-color: #cde9db; }
+  .fact.miss { color: var(--bad); background: var(--bad-bg); border-color: #f3cccc; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 7px; }
+  .note.warn { color: var(--warn); }
+  .note.bad { color: var(--bad); }
+
+  .empty {
+    text-align: center; padding: 54px 20px; color: var(--muted); font-size: 13.5px;
+  }
+  .empty .big { font-size: 38px; margin-bottom: 8px; }
+
+  @media (max-width: 760px) {
+    .mini { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .rankings { grid-template-columns: repeat(4, 230px); }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="brand">
+      <div class="logo">🧪</div>
+      <div>
+        <h1>RAG 评估</h1>
+        <p>四策略检索对照 · 证据覆盖 · 端到端答案覆盖</p>
+      </div>
+    </div>
+    <a class="ghost" href="/">← 回到对话</a>
+  </header>
+
+  <section class="card">
+    <div class="controls">
+      <button id="run-retrieval">重跑检索评估</button>
+      <button id="run-full" class="secondary">重跑端到端评估</button>
+      <span id="run-state" class="run-state">加载中…</span>
+    </div>
+    <div id="progress" class="progress"><div id="bar" class="bar"></div></div>
+  </section>
+
+  <div id="banner"></div>
+  <main id="content">
+    <div class="empty"><div class="big">🧪</div>还没有评估结果，点上面的按钮跑一轮。</div>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+const BUCKET_LABEL = {
+  A_policy: "政策事实",
+  B_model: "型号参数",
+  C_colloquial: "口语提问",
+  E_multi: "多跳组合",
+  D_reject: "超范围拒答",
+};
+const DIFF_LABEL = { easy: "简单", medium: "中等", hard: "困难" };
+const BEHAVIOR_LABEL = { answer: "回答", refuse: "拒答", no_commitment: "不承诺" };
+const STRATEGY_ORDER = ["vector", "bm25", "hybrid", "hybrid_rerank"];
+const PROD = "hybrid_rerank";
+
+let latest = null;
+let filter = { bucket: "", difficulty: "", behavior: "", text: "" };
+let wasRunning = false;
+
+const $ = (id) => document.getElementById(id);
+
+function esc(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function pct(value, digits = 1) {
+  if (value === null || value === undefined) return "—";
+  return (value * 100).toFixed(digits) + "%";
+}
+function num(value, digits = 3) {
+  if (value === null || value === undefined) return "—";
+  return Number(value).toFixed(digits);
+}
+function tag(text, cls = "") {
+  return `<span class="tag ${cls}">${esc(text)}</span>`;
+}
+function strategyLabel(name) {
+  return `<span class="strategy-name ${name === PROD ? "prod" : ""}">${esc(name)}${
+    name === PROD ? '<span class="tag-prod">线上</span>' : ""
+  }</span>`;
+}
+
+/* ---------- 汇总 ---------- */
+
+function renderSummary(data) {
+  const answerCount = (data.questions || []).filter(q => q.answer_coverage).length;
+  const answeredOk = (data.questions || []).filter(q => q.answer_coverage && q.answer_coverage.ok).length;
+  const cards = [
+    ["知识库 chunk", `${data.collection_count}`, ""],
+    ["评估题", `${data.samples}`, "题"],
+    ["本次模式", data.mode === "full" ? "端到端" : "检索", ""],
+    ["降级次数", `${data.degraded}`, "次"],
+  ];
+  if (answerCount) cards.push(["端到端覆盖", `${answeredOk}/${answerCount}`, ""]);
+
+  return `<section class="card">
+    <h2>📊 本轮概况</h2>
+    <p class="sub">run ${esc(data.run_id)} · ${esc(data.started_at || "")} → ${esc(data.finished_at || "")}</p>
+    <div class="stats">
+      ${cards.map(([k, v, unit]) => `
+        <div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)} <small>${esc(unit)}</small></div></div>
+      `).join("")}
+    </div>
+    ${data.degraded > 0 ? `<p class="note warn">⚠️ 有 ${data.degraded} 次重排或改写降级，对应排序可能退化为未精排结果。</p>` : ""}
+  </section>`;
+}
+
+function renderStrategyTable(strategies) {
+  const rows = STRATEGY_ORDER.filter((s) => strategies[s]).map((name) => {
+    const m = strategies[name];
+    return `<tr>
+      <td>${strategyLabel(name)}</td>
+      <td class="num">${pct(m["recall@5"])}</td>
+      <td class="num">${pct(m["recall@10"])}</td>
+      <td class="num">${num(m["mrr@10"])}</td>
+      <td class="num">${pct(m.evidence_coverage)}</td>
+      <td class="num muted">${m.questions}</td>
+    </tr>`;
+  }).join("");
+
+  return `<section class="card">
+    <h2>🔍 四策略对照</h2>
+    <p class="sub">Recall/MRR 的题集为 32 道可回答题（超范围拒答题不计）；证据覆盖率 = 前 10 条证据覆盖 ground-truth 关键事实的比例。</p>
+    <table>
+      <thead><tr>
+        <th>策略</th><th class="num">Recall@5</th><th class="num">Recall@10</th>
+        <th class="num">MRR@10</th><th class="num">证据覆盖</th><th class="num">题数</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
+/* ---------- 筛选 ---------- */
+
+function renderFilterBar() {
+  return `<div class="filters">
+    <select id="f-bucket">
+      <option value="">全部分桶</option>
+      ${Object.entries(BUCKET_LABEL).map(([k, v]) => `<option value="${k}">${v}（${k}）</option>`).join("")}
+    </select>
+    <select id="f-difficulty">
+      <option value="">全部难度</option>
+      ${Object.entries(DIFF_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+    </select>
+    <select id="f-behavior">
+      <option value="">全部期望行为</option>
+      ${Object.entries(BEHAVIOR_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+    </select>
+    <input id="f-text" type="search" placeholder="搜题号或问题…">
+    <span class="count" id="f-count"></span>
+  </div>`;
+}
+
+function bindFilters() {
+  const map = {
+    "f-bucket": "bucket", "f-difficulty": "difficulty",
+    "f-behavior": "behavior", "f-text": "text",
+  };
+  Object.entries(map).forEach(([id, key]) => {
+    const el = $(id);
+    if (!el) return;
+    el.value = filter[key];
+    el.addEventListener("input", () => {
+      filter[key] = el.value.trim();
+      renderDetails();
+    });
+    el.addEventListener("change", () => {
+      filter[key] = el.value.trim();
+      renderDetails();
+    });
+  });
+}
+
+function filteredQuestions() {
+  if (!latest) return [];
+  const text = filter.text.toLowerCase();
+  return latest.questions.filter((q) => {
+    if (filter.bucket && q.bucket !== filter.bucket) return false;
+    if (filter.difficulty && q.difficulty !== filter.difficulty) return false;
+    if (filter.behavior && q.expected_behavior !== filter.behavior) return false;
+    if (text && !`${q.id} ${q.query}`.toLowerCase().includes(text)) return false;
+    return true;
+  });
+}
+
+/* ---------- 检索明细 ---------- */
+
+function miniStrategyCell(name, row) {
+  const m = row.metrics || {};
+  if (!Object.keys(m).length) {
+    // D_reject 没有 ground-truth，只统计前 10 条里召回了多少候选
+    return `<div>
+      <b class="${name === PROD ? "prod" : ""}">${esc(name)}</b>
+      <span>无真值 · 前 10 召回 <strong>${(row.hits || []).length}</strong> 条</span>
+      ${row.degraded ? tag("降级", "flag") : ""}
+    </div>`;
+  }
+  const rank = row.first_relevant_rank;
+  const rankHtml = rank === null
+    ? '<span class="rank-miss">首相关未进 top50</span>'
+    : `<span class="${rank === 1 ? "rank1" : ""}">首相关 #${rank}</span>`;
+  const cov = row.evidence_coverage || {};
+  const covHtml = cov.rate === null
+    ? '<span>覆盖 —</span>'
+    : `<span>覆盖 <strong>${pct(cov.rate, 0)}</strong></span>`;
+  return `<div>
+    <b class="${name === PROD ? "prod" : ""}">${esc(name)}</b>
+    ${rankHtml}
+    <span>R@5 <strong>${pct(m["recall@5"], 0)}</strong></span>
+    ${covHtml}
+    ${row.degraded ? tag("降级", "flag") : ""}
+  </div>`;
+}
+
+function rankColumn(name, row) {
+  const hits = row.hits || [];
+  const items = hits.map((hit, index) => `
+    <li class="hit ${hit.relevant ? "relevant" : ""}" title="${esc(hit.answer || "")}">
+      <span class="pos">${index + 1}</span>
+      <span class="body">
+        <span class="path">${esc(hit.section_path || "(无标题)")}</span>
+        <span class="snippet">${esc(hit.question || "")}${hit.question && hit.answer ? " · " : ""}${esc(hit.answer || "")}</span>
+      </span>
+    </li>`).join("");
+  const m = row.metrics || {};
+  return `<div class="rank-col">
+    <h5 class="${name === PROD ? "prod" : ""}">
+      <span>${esc(name)}${row.degraded ? " ⚠" : ""}</span>
+      <span>MRR ${num(m["mrr@10"])}</span>
+    </h5>
+    <ol>${items || '<li class="hit muted">无结果</li>'}</ol>
+  </div>`;
+}
+
+function retrievalCard(q) {
+  const strategies = q.strategies || {};
+  const flagged = STRATEGY_ORDER.some((name) => {
+    const cov = (strategies[name] || {}).evidence_coverage || {};
+    return cov.rate !== null && cov.rate !== undefined && cov.rate < 1;
+  });
+  const coverageTag = q.bucket === "D_reject"
+    ? tag("超范围 · 无真值")
+    : flagged ? tag("关键事实有缺失", "flag") : tag("证据覆盖完整", "good");
+  const cells = STRATEGY_ORDER.filter((n) => strategies[n])
+    .map((name) => miniStrategyCell(name, strategies[name])).join("");
+  const columns = STRATEGY_ORDER.filter((n) => strategies[n])
+    .map((name) => rankColumn(name, strategies[name])).join("");
+
+  return `<div class="qcard">
+    <div class="qhead">
+      <span class="qid">${esc(q.id)}</span>
+      <span class="qtext">${esc(q.query)}</span>
+      ${tag(BUCKET_LABEL[q.bucket] || q.bucket || "—")}
+      ${tag(DIFF_LABEL[q.difficulty] || q.difficulty || "—")}
+      ${tag(BEHAVIOR_LABEL[q.expected_behavior] || q.expected_behavior || "—")}
+      ${coverageTag}
+      <button class="open" type="button">展开排序 ▾</button>
+    </div>
+    <div class="mini">${cells}</div>
+    <div class="rankings hidden">${columns}</div>
+  </div>`;
+}
+
+/* ---------- 答案明细 ---------- */
+
+function answerCard(q) {
+  const cov = q.answer_coverage || {};
+  const ok = cov.ok;
+  const facts = [
+    ...(cov.matched || []).filter(t => t).map(t => `<span class="fact ok">✓ ${esc(t)}</span>`),
+    ...(cov.missing || []).filter(t => t).map(t => `<span class="fact miss">✗ ${esc(t)}</span>`),
+  ].join("");
+  const violations = (cov.violations || []).length
+    ? `<p class="note bad">负面断言违规：${esc(cov.violations.join("；"))}</p>` : "";
+  const faith = q.faithful === null || q.faithful === undefined ? ""
+    : `<p class="note ${q.faithful ? "" : "bad"}">忠实度：${q.faithful ? "通过" : "不通过"}${
+        q.judge_reason ? ` · ${esc(q.judge_reason)}` : ""}</p>`;
+  const refusal = q.refused
+    ? `<p class="note">拒答来源：${esc(q.refusal_source || "—")}${
+        q.refusal_reason ? ` · ${esc(q.refusal_reason)}` : ""}</p>` : "";
+
+  return `<div class="acard ${ok ? "" : "bad"}">
+    <div class="qhead">
+      <span class="qid">${esc(q.id)}</span>
+      <span class="qtext">${esc(q.query)}</span>
+      ${tag(BUCKET_LABEL[q.bucket] || q.bucket || "—")}
+      ${tag(BEHAVIOR_LABEL[q.expected_behavior] || q.expected_behavior || "—")}
+      ${ok ? tag("覆盖", "good") : tag("未覆盖", "bad")}
+      ${q.degraded ? tag("降级", "flag") : ""}
+    </div>
+    <div class="answer">${esc(q.answer || "(空)")}</div>
+    ${facts ? `<div class="facts">${facts}</div>` : ""}
+    ${violations}${faith}${refusal}
+  </div>`;
+}
+
+/* ---------- 明细区 ---------- */
+
+function renderDetails() {
+  const retrieval = $("retrieval-list");
+  if (!retrieval) return;
+  const rows = filteredQuestions();
+  const count = $("f-count");
+  if (count) count.textContent = `${rows.length} / ${latest.questions.length} 题`;
+
+  retrieval.innerHTML = rows.length
+    ? rows.map(retrievalCard).join("")
+    : '<div class="empty">没有符合筛选的题目。</div>';
+
+  const answerList = $("answer-list");
+  if (answerList) {
+    answerList.innerHTML = rows.length
+      ? rows.map(answerCard).join("")
+      : '<div class="empty">没有符合筛选的题目。</div>';
+  }
+
+  document.querySelectorAll("#retrieval-list .qcard .open").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const panel = btn.closest(".qcard").querySelector(".rankings");
+      const hidden = panel.classList.toggle("hidden");
+      btn.textContent = hidden ? "展开排序 ▾" : "收起排序 ▴";
+    });
+  });
+}
+
+function renderAnswerSection(data) {
+  if (!data.answers) {
+    return `<section class="card">
+      <h2>💬 端到端答案覆盖</h2>
+      <p class="sub">这次只跑了检索评估，没有生成答案。点「重跑端到端评估」补齐。</p>
+    </section>`;
+  }
+  const a = data.answers;
+  const cards = [
+    ["答案覆盖", `${a.covered}/${a.answered}`, pct(a.coverage)],
+    ["忠实度", `${a.faithful}/${a.faithful_total}`, a.faithful_total ? pct(a.faithful / a.faithful_total) : "—"],
+    ["拒答正确", `${a.refusal_correct}/${a.refusal_total}`, a.refusal_total ? pct(a.refusal_correct / a.refusal_total) : "—"],
+    ["负面断言", `${a.negative_ok}/${a.negative_total}`, a.negative_total ? pct(a.negative_ok / a.negative_total) : "—"],
+  ];
+  return `<section class="card">
+    <h2>💬 端到端答案覆盖</h2>
+    <p class="sub">答案覆盖按每题期望行为判定：answer 需覆盖全部关键事实，no_commitment 需不出现到账承诺，refuse 需正确拒答。</p>
+    <div class="stats">
+      ${cards.map(([k, v, rate]) => `
+        <div class="stat"><div class="k">${esc(k)}</div>
+          <div class="v">${esc(v)}</div><div class="k">${esc(rate)}</div></div>
+      `).join("")}
+    </div>
+    <div id="answer-list" style="margin-top:16px"></div>
+  </section>`;
+}
+
+function renderApp() {
+  if (!latest) {
+    $("content").innerHTML = '<div class="empty"><div class="big">🧪</div>还没有评估结果，点上面的按钮跑一轮。</div>';
+    return;
+  }
+  $("content").innerHTML = [
+    renderSummary(latest),
+    renderStrategyTable(latest.strategies || {}),
+    `<section class="card">
+      <h2>🧾 检索明细</h2>
+      <p class="sub">每题四策略的排序名次与证据覆盖；点「展开排序」看前 10 条候选，绿色为 ground-truth 相关 chunk。</p>
+      ${renderFilterBar()}
+      <div id="retrieval-list"></div>
+    </section>`,
+    renderAnswerSection(latest),
+  ].join("");
+  bindFilters();
+  renderDetails();
+}
+
+/* ---------- 运行状态 ---------- */
+
+function setBusy(busy) {
+  $("run-retrieval").disabled = busy;
+  $("run-full").disabled = busy;
+}
+
+function updateRunState(state) {
+  const el = $("run-state");
+  const progress = $("progress");
+  const bar = $("bar");
+  const running = state.status === "running";
+  el.className = "run-state" + (running ? " running" : state.status === "error" ? " error" : "");
+
+  if (running) {
+    const p = state.progress || {};
+    const total = p.total || 0;
+    const done = p.done || 0;
+    el.textContent = `${p.phase === "answer" ? "生成答案" : p.phase === "retrieval" ? "检索" : "准备"} · ${p.message || ""}${
+      total ? `（${done}/${total}）` : ""}`;
+    progress.classList.add("show");
+    bar.style.width = total ? `${Math.round((done / total) * 100)}%` : "4%";
+    setBusy(true);
+  } else {
+    setBusy(false);
+    progress.classList.remove("show");
+    if (state.status === "error") {
+      el.textContent = `评估失败：${state.error || "未知错误"}`;
+    } else if (state.status === "done") {
+      el.textContent = "本轮评估完成";
+    } else {
+      el.textContent = latest ? "就绪" : "还没有运行记录";
+    }
+  }
+}
+
+async function fetchStatus() {
+  const resp = await fetch("/rag-eval/api/status");
+  return resp.json();
+}
+
+async function fetchLatest() {
+  const resp = await fetch("/rag-eval/api/latest");
+  const body = await resp.json();
+  latest = body.latest;
+  renderApp();
+}
+
+async function poll() {
+  let state;
+  try {
+    state = await fetchStatus();
+  } catch (err) {
+    $("run-state").textContent = "无法连接服务：" + err.message;
+    return;
+  }
+  updateRunState(state);
+  if (state.status === "running") {
+    wasRunning = true;
+    setTimeout(poll, 1500);
+  } else if (wasRunning) {
+    wasRunning = false;
+    await fetchLatest();
+  }
+}
+
+async function startRun(mode) {
+  setBusy(true);
+  try {
+    const resp = await fetch("/rag-eval/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.detail || `HTTP ${resp.status}`);
+    }
+    $("run-state").textContent = mode === "full" ? "端到端评估启动…" : "检索评估启动…";
+    wasRunning = true;
+    setTimeout(poll, 600);
+  } catch (err) {
+    setBusy(false);
+    $("run-state").className = "run-state error";
+    $("run-state").textContent = "启动失败：" + err.message;
+  }
+}
+
+$("run-retrieval").addEventListener("click", () => startRun("retrieval"));
+$("run-full").addEventListener("click", () => startRun("full"));
+
+(async function init() {
+  await fetchLatest();
+  const state = await fetchStatus().catch(() => null);
+  if (state) {
+    updateRunState(state);
+    if (state.status === "running") {
+      wasRunning = true;
+      setTimeout(poll, 1200);
+    }
+  }
+})();
+</script>
+</body>
+</html>
