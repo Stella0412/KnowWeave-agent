@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
+import unicodedata
 import uuid
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -65,14 +68,55 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _models_snapshot() -> dict:
+    """本轮评估实际用的模型，页头直接展示；写进结果快照，之后改配置也不会漂。"""
+    return {
+        "embed": settings.embed_model,
+        "rerank": settings.rerank_model,
+        "judge": settings.llm_model,
+    }
+
+
+def expected_tokens(sample: dict) -> list[str]:
+    """答案/证据覆盖用的标准要点：优先 `expected_points`，旧样本回退 `must_contain`。"""
+    points = sample.get("expected_points")
+    if points:
+        return list(points)
+    return (sample.get("ground_truth") or {}).get("must_contain") or []
+
+
+_CITATION = re.compile(r"\[\s*\d+\s*\]")
+_NON_CONTENT = re.compile(r"[^0-9a-z一-鿿]+")
+
+
+def _coverage_key(text: str | None) -> str:
+    """覆盖比对用的规范形：全角转半角、小写，去掉引用编号、空白、标点与 markdown 强调符。
+
+    答案里的 `**5000 元**起`、`[1][10]` 这类排版不该影响「要点有没有答到」。
+    """
+    text = unicodedata.normalize("NFKC", text or "").lower()
+    return _NON_CONTENT.sub("", _CITATION.sub("", text))
+
+
+def _covers(point: str, haystack: str) -> bool:
+    """要点里的字是否都出现在文本里（顺序不限）。
+
+    机械近似而非语义判断：同义改写（「另计」写成「加收 12 元」）仍会漏计，
+    宁可漏计也不让排版差异把答对的题判错。
+    """
+    if not point:
+        return False
+    return not (Counter(point) - Counter(haystack))
+
+
 def token_coverage(tokens: list[str] | None, text: str | None) -> dict:
     """期望关键事实在文本里出现了几条。去重但保序，空 token 列表不算分。"""
     wanted = list(dict.fromkeys(t for t in (tokens or []) if t))
     if not wanted:
         return {"matched": [], "missing": [], "rate": None}
-    haystack = text or ""
-    matched = [token for token in wanted if token in haystack]
-    missing = [token for token in wanted if token not in haystack]
+    haystack = _coverage_key(text)
+    matched = [token for token in wanted if _covers(_coverage_key(token), haystack)]
+    missing = [token for token in wanted if token not in matched]
     return {"matched": matched, "missing": missing, "rate": len(matched) / len(wanted)}
 
 
@@ -85,8 +129,9 @@ def evidence_coverage(
 ) -> dict:
     """前 10 条证据对 ground-truth 的覆盖。
 
-    有 `must_contain` 时按关键事实算；没有时退化为「前 10 条里有没有命中相关 chunk」。
-    `D_reject` 没有真值，返回 rate=None，汇总时排除。
+    有标准要点（`expected_points`，旧样本回退 `must_contain`）时按关键事实算；
+    没有时退化为「前 10 条里有没有命中相关 chunk」。
+    `D_absent` 没有真值，返回 rate=None，汇总时排除。
     """
     text = "\n".join(
         f"{hit.get('question') or ''}\n{hit.get('answer') or ''}" for hit in (hits or [])
@@ -107,7 +152,7 @@ def evidence_coverage(
 def answer_coverage(sample: dict, answer: str, *, refused: bool) -> dict:
     """端到端答案是否满足该题的期望行为。"""
     behavior = sample.get("expected_behavior") or "answer"
-    tokens = (sample.get("ground_truth") or {}).get("must_contain") or []
+    tokens = expected_tokens(sample)
 
     if behavior == "refuse":
         return {
@@ -122,7 +167,8 @@ def answer_coverage(sample: dict, answer: str, *, refused: bool) -> dict:
     coverage = token_coverage(tokens, answer)
     if behavior == "no_commitment":
         ok, violations = check_no_commitment(answer)
-        ok = bool(ok) and not refused
+        points_ok = coverage["rate"] in (None, 1.0)
+        ok = bool(ok) and points_ok and not refused
         return {
             "ok": ok,
             "rate": 1.0 if ok else 0.0,
@@ -169,7 +215,7 @@ def _hit_payload(item: Evidence, relevant: set[int]) -> dict:
 
 
 def _strategy_summary(questions: list[dict]) -> dict:
-    answerable = [q for q in questions if q.get("bucket") != "D_reject"]
+    answerable = [q for q in questions if q.get("bucket") != "D_absent"]
     summary = {}
     for strategy in STRATEGIES:
         metrics = [
@@ -197,7 +243,8 @@ def _answer_summary(questions: list[dict]) -> dict | None:
     if not answered:
         return None
     covered = [q for q in answered if q["answer_coverage"]["ok"]]
-    refuse_rows = [q for q in answered if q.get("bucket") == "D_reject"]
+    refuse_rows = [q for q in answered if q.get("bucket") == "D_absent"]
+    answerable_rows = [q for q in answered if q.get("bucket") != "D_absent"]
     faithful_rows = [q for q in answered if q.get("faithful") is not None]
     negative_rows = [q for q in answered if q.get("negative") is not None]
     return {
@@ -206,6 +253,8 @@ def _answer_summary(questions: list[dict]) -> dict | None:
         "coverage": len(covered) / len(answered),
         "refusal_correct": sum(1 for q in refuse_rows if q.get("refused")),
         "refusal_total": len(refuse_rows),
+        "refused_answerable": sum(1 for q in answerable_rows if q.get("refused")),
+        "answerable_total": len(answerable_rows),
         "faithful": sum(1 for q in faithful_rows if q.get("faithful")),
         "faithful_total": len(faithful_rows),
         "negative_ok": sum(1 for q in negative_rows if q["negative"]["ok"]),
@@ -263,7 +312,7 @@ def _run_retrieval_pass(
                 "first_relevant_rank": first_relevant_rank(ids, relevant),
                 "evidence_coverage": evidence_coverage(
                     top_hits,
-                    (sample.get("ground_truth") or {}).get("must_contain") or [],
+                    expected_tokens(sample),
                     relevant,
                 ),
                 "degraded": degraded,
@@ -351,6 +400,7 @@ def run_evaluation(mode: str = "retrieval", run_id: str = "manual") -> dict:
         "finished_at": _now(),
         "collection_count": collection_count,
         "samples": len(samples),
+        "models": _models_snapshot(),
         "degraded": sum(1 for q in questions if q.get("degraded")),
         "strategies": _strategy_summary(questions),
         "answers": _answer_summary(questions),
@@ -370,7 +420,10 @@ def persist_result(result: dict) -> None:
 def read_latest() -> dict | None:
     if not LATEST_PATH.exists():
         return None
-    return json.loads(LATEST_PATH.read_text(encoding="utf-8"))
+    result = json.loads(LATEST_PATH.read_text(encoding="utf-8"))
+    # 旧结果文件没有模型快照：用当前配置兜底，页头不至于空着；新结果以快照为准。
+    result.setdefault("models", _models_snapshot())
+    return result
 
 
 def _run_guarded(run_id: str, mode: str) -> None:

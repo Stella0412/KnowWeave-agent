@@ -30,6 +30,50 @@ def test_resolve_relevant_without_must_contain_takes_whole_section():
     assert mod.resolve_relevant(rows, {"ground_truth": {"section_path": "甲 > 乙"}}) == {1}
 
 
+def test_resolve_relevant_narrows_one_section_without_touching_others():
+    # 多章节题：12 行表按行收窄，其余章节整段保留
+    rows = [
+        {"id": 1, "section_path": "售后手册 > 常见问题处理时限", "question": "时限",
+         "answer": "| 退款 | 2 小时 | 3 个工作日 |"},
+        {"id": 2, "section_path": "售后手册 > 常见问题处理时限", "question": "时限",
+         "answer": "| 换货 | 2 小时 | 5 个工作日 |"},
+        {"id": 3, "section_path": "售后手册 > 人工客服入口与时间", "question": "客服",
+         "answer": "人工客服服务时间为每日 9:00 至 22:00"},
+    ]
+    sample = {
+        "ground_truth": {
+            "section_paths": [
+                "售后手册 > 常见问题处理时限",
+                "售后手册 > 人工客服入口与时间",
+            ],
+            "must_contain_any_by_section": {
+                "售后手册 > 常见问题处理时限": ["退款", "换货"],
+            },
+        }
+    }
+    assert mod.resolve_relevant(rows, sample) == {1, 2, 3}
+
+
+def test_resolve_relevant_any_tokens_keep_only_matching_rows():
+    rows = [
+        {"id": 1, "section_path": "售后手册 > 常见问题处理时限", "question": "时限",
+         "answer": "| 退款 | 2 小时 | 3 个工作日 |"},
+        {"id": 2, "section_path": "售后手册 > 常见问题处理时限", "question": "时限",
+         "answer": "| 换货 | 2 小时 | 5 个工作日 |"},
+        {"id": 3, "section_path": "售后手册 > 常见问题处理时限", "question": "时限",
+         "answer": "| 投诉 | 1 小时 | 3 个工作日 |"},
+    ]
+    sample = {
+        "ground_truth": {
+            "section_path": "售后手册 > 常见问题处理时限",
+            "must_contain_any_by_section": {
+                "售后手册 > 常见问题处理时限": ["退款", "投诉"],
+            },
+        }
+    }
+    assert mod.resolve_relevant(rows, sample) == {1, 3}
+
+
 def test_resolve_relevant_empty_ground_truth_for_reject_bucket():
     assert mod.resolve_relevant([{"id": 1, "section_path": "甲", "question": "", "answer": ""}], {"ground_truth": {}}) == set()
 

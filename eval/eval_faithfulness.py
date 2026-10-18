@@ -8,7 +8,7 @@
 
 metric 说明：
 - 常规题：Faithfulness 率（有依据的答案数 / 生成答案数），按桶列。
-- `D_reject` 桶：**拒答正确率**（拒答没有可判的断言，忠实度对它没意义）。
+- `D_absent` 桶：**拒答正确率**（拒答没有可判的断言，忠实度对它没意义）。
 - `no_commitment` 题：另跑负面断言检查 —— 库里的依据本身是「不承诺具体数字」，
   答出具体到账天数就是错，这是 §9.4 负面知识规则唯一能被机械检验的地方。
 """
@@ -154,10 +154,10 @@ def main() -> None:
         "| 桶 | 生成答案数 | 忠实数 | Faithfulness |",
         "|---|---|---|---|",
     ]
-    generated_total = sum(v["total"] for k, v in per_bucket.items() if k != "D_reject")
-    faithful_total = sum(v["faithful"] for k, v in per_bucket.items() if k != "D_reject")
+    generated_total = sum(v["total"] for k, v in per_bucket.items() if k != "D_absent")
+    faithful_total = sum(v["faithful"] for k, v in per_bucket.items() if k != "D_absent")
     for bucket, slot in sorted(per_bucket.items()):
-        if bucket == "D_reject":
+        if bucket == "D_absent":
             continue
         rate = slot["faithful"] / slot["total"] if slot["total"] else 0.0
         lines.append(f"| {bucket} | {slot['total']} | {slot['faithful']} | {rate:.3f} |")
@@ -165,7 +165,7 @@ def main() -> None:
     lines += ["", f"**合计 Faithfulness = {overall:.3f}**（{faithful_total}/{generated_total}）", ""]
 
     lines += [
-        "## 拒答正确率（D_reject 桶）",
+        "## 拒答正确率（D_absent 桶）",
         "",
         f"- 正确拒答 {sum(reject_results)}/{len(reject_results)} = "
         f"{(sum(reject_results) / len(reject_results)) if reject_results else 0:.3f}",
@@ -186,7 +186,7 @@ def main() -> None:
     lines.append("")
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = REPORT_DIR / f"ch04-faithfulness-{date.today().isoformat()}.md"
+    out_path = REPORT_DIR / f"ch04-faithfulness-{date.today().isoformat()}-{len(samples)}q.md"
     text = "\n".join(lines)
     out_path.write_text(text, encoding="utf-8")
     print(text)

@@ -218,16 +218,170 @@
   .note { font-size: 12px; color: var(--muted); margin-top: 7px; }
   .note.warn { color: var(--warn); }
   .note.bad { color: var(--bad); }
+  details.detail-fold {
+    margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 12px;
+  }
+  details.detail-fold summary {
+    cursor: pointer; font-size: 12.5px; color: var(--brand);
+  }
 
   .empty {
     text-align: center; padding: 54px 20px; color: var(--muted); font-size: 13.5px;
   }
   .empty .big { font-size: 38px; margin-bottom: 8px; }
+  .hidden { display: none; }
+
+  /* 概况：信息卡 + 结论卡两排 */
+  .stats.secondary { margin-top: 10px; }
+  .stat.compact .v { font-size: 15px; font-weight: 600; }
+
+  /* 检索质量（确定性） */
+  .quality-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .quality-head h2 { margin-bottom: 0; }
+  .tabs { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+  .metric-tab {
+    font: inherit; font-size: 12px; cursor: pointer;
+    padding: 5px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: #fff; color: var(--muted);
+  }
+  .metric-tab.active {
+    background: var(--brand); border-color: var(--brand); color: #fff;
+  }
+  .chart { position: relative; padding: 16px 0 0 42px; margin-top: 18px; }
+  .chart-grid { position: absolute; left: 42px; right: 0; top: 16px; height: 190px; }
+  .chart-grid .line { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--border); }
+  .chart-grid .line span {
+    position: absolute; left: -38px; top: -8px; width: 32px;
+    text-align: right; font-size: 10.5px; color: var(--muted);
+  }
+  .chart-groups { display: flex; gap: 14px; align-items: flex-start; }
+  .chart-group { flex: 1; min-width: 0; }
+  .chart-group.overall {
+    border-left: 1px dashed var(--border); margin-left: 2px; padding-left: 14px;
+  }
+  .chart-group .bars {
+    height: 190px; display: flex; align-items: flex-end; justify-content: center; gap: 3px;
+  }
+  .bar-wrap {
+    position: relative; flex: 1; max-width: 34px; height: 100%;
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  .bar-val {
+    position: absolute; left: -9px; right: -9px; text-align: center;
+    font-size: 10px; color: var(--muted); white-space: nowrap;
+  }
+  .bar { width: 100%; border-radius: 4px 4px 0 0; }
+  .bar-vector, .swatch.bar-vector { background: #c9b3a3; }
+  .bar-bm25, .swatch.bar-bm25 { background: #7cc6a1; }
+  .bar-hybrid, .swatch.bar-hybrid { background: var(--brand-2); }
+  .bar-hybrid_rerank, .swatch.bar-hybrid_rerank { background: var(--brand); }
+  .chart-label {
+    margin-top: 7px; text-align: center; font-size: 12px; font-weight: 600;
+  }
+  .chart-label small {
+    display: block; font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 10px; color: var(--muted); font-weight: 400;
+  }
+  .legend {
+    display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px;
+    padding-top: 10px; border-top: 1px dashed var(--border);
+    font-size: 12px; color: #6b6b6b;
+  }
+  .legend .swatch {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 3px; margin-right: 6px; vertical-align: -1px;
+  }
+  .insight {
+    margin-top: 12px; padding: 9px 12px; border: 1px dashed var(--border);
+    border-radius: 9px; background: #fffdfa; font-size: 12.5px; color: #6b6b6b;
+  }
+  .insight b { color: var(--brand); }
+
+  /* 完整数据 */
+  tr.best-row td { background: #fff2ec; }
+  .dnote {
+    margin-top: 12px; padding: 9px 12px; border: 1px dashed var(--border);
+    border-radius: 9px; background: #fffdfa; font-size: 12.5px; color: #6b6b6b;
+  }
+  .dnote b { color: var(--brand); }
+
+  /* 忠实度 */
+  .faith-grid {
+    display: grid; grid-template-columns: minmax(0, 1fr) 230px;
+    gap: 22px; align-items: center; margin-top: 4px;
+  }
+  .faith-bars { display: flex; flex-direction: column; gap: 13px; }
+  .faith-top {
+    display: flex; justify-content: space-between; gap: 10px;
+    font-size: 12.5px; margin-bottom: 5px;
+  }
+  .faith-top strong { font-variant-numeric: tabular-nums; }
+  .progress-track {
+    height: 12px; border-radius: 99px; background: #f6ece4;
+    border: 1px solid var(--border); overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--ok); border-radius: 99px;
+    transition: width .3s ease;
+  }
+  .faith-refusal {
+    text-align: center; border-left: 1px dashed var(--border); padding-left: 22px;
+  }
+  .donut {
+    width: 150px; height: 150px; border-radius: 50%;
+    margin: 0 auto; display: flex; align-items: center; justify-content: center;
+  }
+  .donut-hole {
+    width: 112px; height: 112px; border-radius: 50%; background: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .donut-hole strong { font-size: 26px; }
+  .donut-hole small { font-size: 11.5px; color: var(--muted); }
+  .faith-refusal-note {
+    margin-top: 10px; font-size: 12px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .faith-refusal-note b { color: #6b6b6b; }
+  .faith-refusal-note span { color: var(--muted); }
+  .faith-foot { margin-top: 14px; padding: 9px 12px; border-radius: 9px; font-size: 12.5px; }
+  .faith-foot.ok { color: var(--ok); background: var(--ok-bg); border: 1px solid #cde9db; }
+  .faith-foot.bad { color: var(--bad); background: var(--bad-bg); border: 1px solid #f3cccc; }
+
+  /* 编造个案 */
+  .fab-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .fab-head h2 { margin-bottom: 0; }
+  .count-badge {
+    font-size: 11.5px; color: var(--brand); background: #fff2ec;
+    border: 1px solid #ffd2bf; border-radius: 6px; padding: 1px 7px;
+  }
+  .fab-toggle {
+    margin-left: auto; background: #fff; color: var(--brand);
+    border: 1px solid #ffd2bf; padding: 5px 12px; font-size: 12px; border-radius: 8px;
+  }
+  .fab-card {
+    border: 1px solid var(--border); border-left: 3px solid var(--bad);
+    border-radius: 11px; padding: 12px 14px; margin-top: 10px;
+  }
+  .fab-label { font-size: 11px; color: var(--muted); margin: 10px 0 3px; }
+  .fab-reason {
+    font-size: 12.5px; color: #6b6b6b; background: #fffdfa;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  .fab-card .answer {
+    font-size: 13px; margin-top: 0; padding: 8px 10px;
+    background: #fffdfa; border: 1px solid var(--border); border-radius: 8px;
+    white-space: pre-wrap;
+  }
 
   @media (max-width: 760px) {
     .mini { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .rankings { grid-template-columns: repeat(4, 230px); }
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .faith-grid { grid-template-columns: 1fr; }
+    .faith-refusal { border-left: none; border-top: 1px dashed var(--border); padding: 18px 0 0; }
+    .chart-groups { gap: 7px; }
+    .chart-label { font-size: 10.5px; }
+    .bar-val { display: none; }
   }
 </style>
 </head>
@@ -267,15 +421,37 @@ const BUCKET_LABEL = {
   B_model: "型号参数",
   C_colloquial: "口语提问",
   E_multi: "多跳组合",
-  D_reject: "超范围拒答",
+  D_absent: "知识库未覆盖",
 };
 const DIFF_LABEL = { easy: "简单", medium: "中等", hard: "困难" };
 const BEHAVIOR_LABEL = { answer: "回答", refuse: "拒答", no_commitment: "不承诺" };
 const STRATEGY_ORDER = ["vector", "bm25", "hybrid", "hybrid_rerank"];
 const PROD = "hybrid_rerank";
+const BUCKET_ORDER = ["A_policy", "B_model", "C_colloquial", "E_multi"];
+const BUCKET_SHORT = {
+  A_policy: "政策类", B_model: "型号类", C_colloquial: "口语类", E_multi: "跨文档类",
+};
+const STRATEGY_CN = {
+  vector: "纯向量", bm25: "纯 BM25", hybrid: "混合", hybrid_rerank: "混合 + 重排",
+};
+const METRIC_META = {
+  "mrr@10": {
+    label: "MRR",
+    hint: "MRR 看排得够不够靠前：第一条相关证据的平均名次倒数，越高越好。",
+  },
+  "recall@5": {
+    label: "Recall@5",
+    hint: "Recall@5 看该题的证据有没有进前五条，越高越好。",
+  },
+  evidence: {
+    label: "证据覆盖度",
+    hint: "证据覆盖度是另一件事：前 10 条证据里，标准要点的命中比例，越高越好。",
+  },
+};
 
 let latest = null;
 let filter = { bucket: "", difficulty: "", behavior: "", text: "" };
+let qualityMetric = "mrr@10";
 let wasRunning = false;
 
 const $ = (id) => document.getElementById(id);
@@ -284,6 +460,14 @@ function esc(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+function plainText(value) {
+  // 去掉 Markdown 的 **加粗** 标记，用于 title 这类不能渲染 HTML 的地方。
+  return String(value ?? "").replace(/\*\*([^*\n]+)\*\*/g, "$1");
+}
+function formatAnswer(value) {
+  // 先转义再还原 **...** 为 <strong>：模型生成的内容不能直接当 HTML 执行。
+  return esc(value).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
 }
 function pct(value, digits = 1) {
   if (value === null || value === undefined) return "—";
@@ -302,32 +486,101 @@ function strategyLabel(name) {
   }</span>`;
 }
 
+/* ---------- 指标计算 ---------- */
+
+function meanOf(values) {
+  const nums = (values || []).filter((v) => typeof v === "number" && !Number.isNaN(v));
+  return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+}
+
+function metricOf(question, strategy, metric) {
+  const row = (question.strategies || {})[strategy] || {};
+  if (metric === "evidence") {
+    const rate = (row.evidence_coverage || {}).rate;
+    return typeof rate === "number" ? rate : null;
+  }
+  const value = (row.metrics || {})[metric];
+  return typeof value === "number" ? value : null;
+}
+
+function bucketMetric(data, bucket, metric, strategy) {
+  const rows = (data.questions || []).filter((q) => q.bucket === bucket);
+  return meanOf(rows.map((q) => metricOf(q, strategy, metric)));
+}
+
+function overallMetric(data, metric, strategy) {
+  // D_absent 没有标准答案，所有汇总都排除它。
+  const rows = (data.questions || []).filter((q) => q.bucket !== "D_absent");
+  return meanOf(rows.map((q) => metricOf(q, strategy, metric)));
+}
+
+function bestOverall(data, metric = "mrr@10") {
+  return STRATEGY_ORDER
+    .filter((s) => (data.strategies || {})[s])
+    .map((s) => ({ strategy: s, value: overallMetric(data, metric, s) }))
+    .filter((row) => row.value !== null)
+    .sort((a, b) => b.value - a.value)[0] || null;
+}
+
+function shortModel(value) {
+  if (!value) return "—";
+  const parts = String(value).split("/");
+  return parts[parts.length - 1];
+}
+
+function formatTime(value) {
+  if (!value) return "—";
+  return String(value).replace("T", " ").slice(0, 16);
+}
+
 /* ---------- 汇总 ---------- */
 
 function renderSummary(data) {
-  const answerCount = (data.questions || []).filter(q => q.answer_coverage).length;
-  const answeredOk = (data.questions || []).filter(q => q.answer_coverage && q.answer_coverage.ok).length;
-  const cards = [
-    ["知识库 chunk", `${data.collection_count}`, ""],
-    ["评估题", `${data.samples}`, "题"],
-    ["本次模式", data.mode === "full" ? "端到端" : "检索", ""],
-    ["降级次数", `${data.degraded}`, "次"],
+  const a = data.answers;
+  const models = data.models || {};
+  const best = bestOverall(data);
+  const bm25Mrr = bucketMetric(data, "C_colloquial", "mrr@10", "bm25");
+  const prodMrr = bucketMetric(data, "C_colloquial", "mrr@10", PROD);
+  const rise = bm25Mrr !== null && prodMrr !== null ? prodMrr - bm25Mrr : null;
+  const refusalRate = a && a.refusal_total ? a.refusal_correct / a.refusal_total : null;
+
+  const info = [
+    ["评估集", `${data.samples ?? "—"}`, "题", false],
+    ["知识库", `${data.collection_count ?? "—"}`, "块", false],
+    ["嵌入 / 重排", `${shortModel(models.embed)} · ${shortModel(models.rerank)}`, "", true],
+    ["裁判模型", models.judge || "—", "", true],
+    ["上次跑于", formatTime(data.finished_at), "", true],
   ];
-  if (answerCount) cards.push(["端到端覆盖", `${answeredOk}/${answerCount}`, ""]);
+  const highlights = [
+    ["最佳整体 MRR", best ? num(best.value, 3) : "—",
+      best ? `${STRATEGY_CN[best.strategy] || best.strategy} · 四策略最高` : "—", false],
+    ["口语桶 MRR 提升", rise === null ? "—" : `${rise >= 0 ? "+" : ""}${rise.toFixed(3)}`,
+      rise === null ? "—" : `纯 BM25 ${num(bm25Mrr, 3)} → 混合 + 重排 ${num(prodMrr, 3)}`, false],
+    ["答案覆盖度（重排）", a ? pct(a.coverage) : "—",
+      a ? `${a.covered}/${a.answered}` : "—", false],
+    ["库外问题拒答", refusalRate === null ? "—" : pct(refusalRate, 0),
+      a ? `${a.refusal_correct}/${a.refusal_total} 正确拒答` : "—", false],
+  ];
+  const renderCards = (rows) => rows.map(([k, v, note, compact]) => `
+    <div class="stat ${compact ? "compact" : ""}">
+      <div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>
+      <div class="k">${esc(note)}</div>
+    </div>`).join("");
 
   return `<section class="card">
     <h2>📊 本轮概况</h2>
-    <p class="sub">run ${esc(data.run_id)} · ${esc(data.started_at || "")} → ${esc(data.finished_at || "")}</p>
-    <div class="stats">
-      ${cards.map(([k, v, unit]) => `
-        <div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)} <small>${esc(unit)}</small></div></div>
-      `).join("")}
-    </div>
+    <p class="sub">run ${esc(data.run_id)} · ${esc(data.started_at || "")} → ${esc(data.finished_at || "")} · ${
+      data.mode === "full" ? "端到端" : "检索"}</p>
+    <div class="stats">${renderCards(info)}</div>
+    <div class="stats secondary">${renderCards(highlights)}</div>
     ${data.degraded > 0 ? `<p class="note warn">⚠️ 有 ${data.degraded} 次重排或改写降级，对应排序可能退化为未精排结果。</p>` : ""}
   </section>`;
 }
 
-function renderStrategyTable(strategies) {
+function renderStrategyTable(data) {
+  const strategies = data.strategies || {};
+  const answerable = (data.questions || []).filter((q) => q.bucket !== "D_absent").length;
+  const absent = (data.samples || answerable) - answerable;
   const rows = STRATEGY_ORDER.filter((s) => strategies[s]).map((name) => {
     const m = strategies[name];
     return `<tr>
@@ -342,7 +595,7 @@ function renderStrategyTable(strategies) {
 
   return `<section class="card">
     <h2>🔍 四策略对照</h2>
-    <p class="sub">Recall/MRR 的题集为 32 道可回答题（超范围拒答题不计）；证据覆盖率 = 前 10 条证据覆盖 ground-truth 关键事实的比例。</p>
+    <p class="sub">Recall/MRR 的题集为 ${answerable} 道可回答题（知识库未覆盖的 ${absent} 题不计）；证据覆盖率 = 前 10 条证据覆盖标准要点的比例。</p>
     <table>
       <thead><tr>
         <th>策略</th><th class="num">Recall@5</th><th class="num">Recall@10</th>
@@ -351,6 +604,238 @@ function renderStrategyTable(strategies) {
       <tbody>${rows}</tbody>
     </table>
   </section>`;
+}
+
+/* ---------- 检索质量（确定性） ---------- */
+
+function renderQualitySection(data) {
+  return `<section class="card">
+    <div class="quality-head">
+      <h2>🔍 检索质量（确定性）</h2>
+      <span class="tag good">不依赖大模型 · 可复现</span>
+      <div class="tabs">
+        ${Object.entries(METRIC_META).map(([key, meta]) => `
+          <button type="button" class="metric-tab ${key === qualityMetric ? "active" : ""}" data-metric="${key}">${meta.label}</button>
+        `).join("")}
+      </div>
+    </div>
+    <p class="sub" id="quality-hint">${METRIC_META[qualityMetric].hint} 分桶按 A/B/C/E 四类可回答题统计，D_absent 没有标准答案，不参与。</p>
+    <div id="quality-chart">${renderQualityChart(data, qualityMetric)}</div>
+    <div id="quality-note">${renderQualityNote(data, qualityMetric)}</div>
+  </section>`;
+}
+
+function renderQualityChart(data, metric) {
+  const groups = BUCKET_ORDER.map((bucket) => ({
+    key: bucket,
+    label: BUCKET_SHORT[bucket] || bucket,
+    values: Object.fromEntries(
+      STRATEGY_ORDER.map((s) => [s, bucketMetric(data, bucket, metric, s)])
+    ),
+  }));
+  groups.push({
+    key: "overall",
+    label: "总体",
+    values: Object.fromEntries(
+      STRATEGY_ORDER.map((s) => [s, overallMetric(data, metric, s)])
+    ),
+  });
+
+  const lines = [0, 0.25, 0.5, 0.75, 1].map((value) => `
+    <div class="line" style="bottom:${value * 100}%"><span>${value.toFixed(2)}</span></div>
+  `).join("");
+
+  const bars = groups.map((group, index) => `
+    <div class="chart-group ${index === groups.length - 1 ? "overall" : ""}">
+      <div class="bars">
+        ${STRATEGY_ORDER.map((s) => {
+          const value = group.values[s];
+          const height = value === null ? 0 : Math.max(0, Math.min(1, value)) * 190;
+          return `<div class="bar-wrap" title="${esc(STRATEGY_CN[s] || s)} · ${esc(METRIC_META[metric].label)} ${
+            value === null ? "—" : num(value, 3)}">
+            <span class="bar-val" style="bottom:${height + 3}px">${value === null ? "—" : num(value, 3)}</span>
+            <div class="bar bar-${s}" style="height:${height}px"></div>
+          </div>`;
+        }).join("")}
+      </div>
+      <div class="chart-label">${esc(group.label)}<small>${esc(group.key)}</small></div>
+    </div>`).join("");
+
+  return `<div class="chart">
+      <div class="chart-grid">${lines}</div>
+      <div class="chart-groups">${bars}</div>
+    </div>
+    <div class="legend">
+      ${STRATEGY_ORDER.map((s) => `<span><i class="swatch bar-${s}"></i>${esc(STRATEGY_CN[s] || s)}</span>`).join("")}
+    </div>`;
+}
+
+function renderQualityNote(data, metric) {
+  const ranked = STRATEGY_ORDER
+    .map((s) => ({ strategy: s, value: overallMetric(data, metric, s) }))
+    .filter((row) => row.value !== null)
+    .sort((a, b) => b.value - a.value);
+  if (!ranked.length) return "";
+  const best = ranked[0];
+  const weakest = BUCKET_ORDER
+    .map((bucket) => ({ bucket, value: bucketMetric(data, bucket, metric, PROD) }))
+    .filter((row) => row.value !== null)
+    .sort((a, b) => a.value - b.value)[0];
+  return `<p class="insight"><b>读图</b> 看 ${esc(METRIC_META[metric].label)}，${
+    esc(STRATEGY_CN[best.strategy] || best.strategy)} 总体 ${num(best.value, 3)} 最高${
+    weakest ? `；但 ${esc(BUCKET_SHORT[weakest.bucket])} 只有 ${num(weakest.value, 3)}，这是线上策略要重点补的短板` : ""
+  }。</p>`;
+}
+
+function bindQualityTabs() {
+  document.querySelectorAll(".metric-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      qualityMetric = btn.dataset.metric;
+      document.querySelectorAll(".metric-tab").forEach((b) => b.classList.toggle("active", b === btn));
+      const chart = $("quality-chart");
+      const note = $("quality-note");
+      const hint = $("quality-hint");
+      if (chart) chart.innerHTML = renderQualityChart(latest, qualityMetric);
+      if (note) note.innerHTML = renderQualityNote(latest, qualityMetric);
+      if (hint) hint.textContent = `${METRIC_META[qualityMetric].hint} 分桶按 A/B/C/E 四类可回答题统计，D_absent 没有标准答案，不参与。`;
+    });
+  });
+}
+
+/* ---------- 完整数据 ---------- */
+
+function renderFullData(data) {
+  const rows = STRATEGY_ORDER
+    .filter((s) => (data.strategies || {})[s])
+    .map((s) => ({
+      strategy: s,
+      mrr: Object.fromEntries(BUCKET_ORDER.map((b) => [b, bucketMetric(data, b, "mrr@10", s)])),
+      overall: overallMetric(data, "mrr@10", s),
+      evidence: overallMetric(data, "evidence", s),
+      answer: s === PROD && data.answers ? data.answers.coverage : null,
+    }));
+  const bestValue = Math.max(...rows.map((row) => row.overall ?? -1));
+  const a = data.answers;
+  const refusal = a && a.refusal_total
+    ? `${a.refusal_correct}/${a.refusal_total} = ${pct(a.refusal_correct / a.refusal_total, 0)} 正确拒答`
+    : "—";
+
+  return `<section class="card">
+    <h2>📋 完整数据</h2>
+    <p class="sub">左半是分桶 MRR，右边是总体证据覆盖与答案覆盖；带底色那行是总体 MRR 最好的策略。答案只有线上「混合 + 重排」跑过端到端，其余策略记 —。</p>
+    <table>
+      <thead><tr>
+        <th>策略</th>
+        ${BUCKET_ORDER.map((b) => `<th class="num">${esc(BUCKET_SHORT[b])} MRR</th>`).join("")}
+        <th class="num">总体 MRR</th><th class="num">证据覆盖</th><th class="num">答案覆盖</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map((row) => `<tr class="${row.overall !== null && row.overall === bestValue ? "best-row" : ""}">
+          <td>${esc(STRATEGY_CN[row.strategy] || row.strategy)} <span class="strategy-name muted">${esc(row.strategy)}</span>${
+            row.strategy === PROD ? '<span class="tag-prod">线上</span>' : ""}</td>
+          ${BUCKET_ORDER.map((b) => `<td class="num">${num(row.mrr[b], 3)}</td>`).join("")}
+          <td class="num">${num(row.overall, 3)}</td>
+          <td class="num">${pct(row.evidence)}</td>
+          <td class="num ${row.answer === null ? "muted" : ""}">${pct(row.answer)}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    <p class="dnote"><b>D_absent</b> 库外问题没有标准答案，不参与上表。它只评「该拒有没有拒」：${esc(refusal)}。</p>
+  </section>`;
+}
+
+/* ---------- 忠实度 ---------- */
+
+function renderFaithfulness(data) {
+  if (!data.answers) {
+    return `<section class="card">
+      <h2>🎯 忠实度</h2>
+      <p class="sub">这次只跑了检索评估，没有判忠实度。点「重跑端到端评估」补齐。</p>
+    </section>`;
+  }
+  const a = data.answers;
+  const buckets = BUCKET_ORDER.map((bucket) => {
+    const rows = (data.questions || []).filter(
+      (q) => q.bucket === bucket && q.faithful !== null && q.faithful !== undefined
+    );
+    const ok = rows.filter((q) => q.faithful).length;
+    return { bucket, ok, total: rows.length, rate: rows.length ? ok / rows.length : null };
+  });
+  const refusalRate = a.refusal_total ? a.refusal_correct / a.refusal_total : null;
+  const donutColor = refusalRate === null
+    ? "var(--border)" : refusalRate === 1 ? "var(--ok)" : "var(--warn)";
+  const degree = refusalRate === null ? 0 : Math.round(refusalRate * 360);
+
+  return `<section class="card">
+    <h2>🎯 忠实度 <span class="muted" style="font-weight:400">Faithfulness</span></h2>
+    <p class="sub">混合 + 重排 · 答案有没有编造；判为不通过的逐条列在下面的「编造个案」里。</p>
+    <div class="faith-grid">
+      <div class="faith-bars">
+        ${buckets.map((row) => `
+          <div class="faith-row">
+            <div class="faith-top">
+              <span>${esc(BUCKET_SHORT[row.bucket])} <span class="muted">${esc(row.bucket)}</span> · 评 ${row.total} 题</span>
+              <strong>${row.rate === null ? "—" : pct(row.rate, 1)}</strong>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" style="width:${row.rate === null ? 0 : row.rate * 100}%"></div>
+            </div>
+          </div>`).join("")}
+      </div>
+      <div class="faith-refusal">
+        <div class="donut" style="background: conic-gradient(${donutColor} ${degree}deg, #f2e9e1 0deg)">
+          <div class="donut-hole"><strong>${pct(refusalRate, 0)}</strong><small>拒答率</small></div>
+        </div>
+        <div class="faith-refusal-note">
+          <b>D_absent 桶 · 库外问题</b>
+          <span>${a.refusal_correct}/${a.refusal_total} 正确拒答</span>
+        </div>
+      </div>
+    </div>
+    <p class="faith-foot ${refusalRate === 1 ? "ok" : "bad"}">${refusalRate === 1
+      ? `✓ 库外问题评上的 ${a.refusal_total} 道题全部正确拒答，没有「该拒没拒」的个案。`
+      : `✗ 库外问题 ${a.refusal_total} 道中有 ${a.refusal_total - a.refusal_correct} 道没有正确拒答。`}</p>
+  </section>`;
+}
+
+/* ---------- 编造个案 ---------- */
+
+function renderFabrication(data) {
+  if (!data.answers) return "";
+  const cases = (data.questions || []).filter((q) => q.faithful === false);
+  return `<section class="card">
+    <div class="fab-head">
+      <h2>🧨 编造个案 <span class="count-badge">${cases.length} 例</span></h2>
+      ${cases.length ? '<button class="fab-toggle" id="fab-toggle" type="button">展开 ▾</button>' : ""}
+    </div>
+    <p class="sub">这些是本轮生成答案里，被忠实度裁判判为「有检索证据没支撑的内容」的个案。点开看问题 / 生成答案 / 裁判理由。</p>
+    ${cases.length
+      ? `<div id="fab-list" class="hidden">
+          ${cases.map((q) => `
+            <div class="fab-card">
+              <div class="qhead">
+                <span class="qid">${esc(q.id)}</span>
+                <span class="qtext">${esc(q.query)}</span>
+                ${tag(BUCKET_LABEL[q.bucket] || q.bucket || "—")}
+              </div>
+              <div class="fab-label">裁判理由</div>
+              <p class="fab-reason">${formatAnswer(q.judge_reason || "（无）")}</p>
+              <div class="fab-label">生成答案（原文）</div>
+              <div class="answer">${formatAnswer(q.answer || "(空)")}</div>
+            </div>`).join("")}
+        </div>`
+      : '<div class="empty" style="padding:20px">本轮没有编造个案。</div>'}
+  </section>`;
+}
+
+function bindFabrication() {
+  const btn = $("fab-toggle");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const list = $("fab-list");
+    const hidden = list.classList.toggle("hidden");
+    btn.textContent = hidden ? "展开 ▾" : "收起 ▴";
+  });
 }
 
 /* ---------- 筛选 ---------- */
@@ -411,7 +896,7 @@ function filteredQuestions() {
 function miniStrategyCell(name, row) {
   const m = row.metrics || {};
   if (!Object.keys(m).length) {
-    // D_reject 没有 ground-truth，只统计前 10 条里召回了多少候选
+    // D_absent 没有 ground-truth，只统计前 10 条里召回了多少候选
     return `<div>
       <b class="${name === PROD ? "prod" : ""}">${esc(name)}</b>
       <span>无真值 · 前 10 召回 <strong>${(row.hits || []).length}</strong> 条</span>
@@ -438,11 +923,11 @@ function miniStrategyCell(name, row) {
 function rankColumn(name, row) {
   const hits = row.hits || [];
   const items = hits.map((hit, index) => `
-    <li class="hit ${hit.relevant ? "relevant" : ""}" title="${esc(hit.answer || "")}">
+    <li class="hit ${hit.relevant ? "relevant" : ""}" title="${esc(plainText(hit.answer || ""))}">
       <span class="pos">${index + 1}</span>
       <span class="body">
         <span class="path">${esc(hit.section_path || "(无标题)")}</span>
-        <span class="snippet">${esc(hit.question || "")}${hit.question && hit.answer ? " · " : ""}${esc(hit.answer || "")}</span>
+        <span class="snippet">${formatAnswer(`${hit.question || ""}${hit.question && hit.answer ? " · " : ""}${hit.answer || ""}`)}</span>
       </span>
     </li>`).join("");
   const m = row.metrics || {};
@@ -461,7 +946,7 @@ function retrievalCard(q) {
     const cov = (strategies[name] || {}).evidence_coverage || {};
     return cov.rate !== null && cov.rate !== undefined && cov.rate < 1;
   });
-  const coverageTag = q.bucket === "D_reject"
+  const coverageTag = q.bucket === "D_absent"
     ? tag("超范围 · 无真值")
     : flagged ? tag("关键事实有缺失", "flag") : tag("证据覆盖完整", "good");
   const cells = STRATEGY_ORDER.filter((n) => strategies[n])
@@ -497,7 +982,7 @@ function answerCard(q) {
     ? `<p class="note bad">负面断言违规：${esc(cov.violations.join("；"))}</p>` : "";
   const faith = q.faithful === null || q.faithful === undefined ? ""
     : `<p class="note ${q.faithful ? "" : "bad"}">忠实度：${q.faithful ? "通过" : "不通过"}${
-        q.judge_reason ? ` · ${esc(q.judge_reason)}` : ""}</p>`;
+        q.judge_reason ? ` · ${formatAnswer(q.judge_reason)}` : ""}</p>`;
   const refusal = q.refused
     ? `<p class="note">拒答来源：${esc(q.refusal_source || "—")}${
         q.refusal_reason ? ` · ${esc(q.refusal_reason)}` : ""}</p>` : "";
@@ -511,7 +996,7 @@ function answerCard(q) {
       ${ok ? tag("覆盖", "good") : tag("未覆盖", "bad")}
       ${q.degraded ? tag("降级", "flag") : ""}
     </div>
-    <div class="answer">${esc(q.answer || "(空)")}</div>
+    <div class="answer">${formatAnswer(q.answer || "(空)")}</div>
     ${facts ? `<div class="facts">${facts}</div>` : ""}
     ${violations}${faith}${refusal}
   </div>`;
@@ -549,27 +1034,33 @@ function renderDetails() {
 function renderAnswerSection(data) {
   if (!data.answers) {
     return `<section class="card">
-      <h2>💬 端到端答案覆盖</h2>
+      <h2>💬 生成质量（端到端答案覆盖）</h2>
       <p class="sub">这次只跑了检索评估，没有生成答案。点「重跑端到端评估」补齐。</p>
     </section>`;
   }
   const a = data.answers;
+  const hasMisfire = typeof a.refused_answerable === "number" && a.answerable_total;
   const cards = [
     ["答案覆盖", `${a.covered}/${a.answered}`, pct(a.coverage)],
     ["忠实度", `${a.faithful}/${a.faithful_total}`, a.faithful_total ? pct(a.faithful / a.faithful_total) : "—"],
     ["拒答正确", `${a.refusal_correct}/${a.refusal_total}`, a.refusal_total ? pct(a.refusal_correct / a.refusal_total) : "—"],
+    ["可回答题误拒", hasMisfire ? `${a.refused_answerable}/${a.answerable_total}` : "—",
+      hasMisfire ? pct(a.refused_answerable / a.answerable_total) : "—"],
     ["负面断言", `${a.negative_ok}/${a.negative_total}`, a.negative_total ? pct(a.negative_ok / a.negative_total) : "—"],
   ];
   return `<section class="card">
-    <h2>💬 端到端答案覆盖</h2>
-    <p class="sub">答案覆盖按每题期望行为判定：answer 需覆盖全部关键事实，no_commitment 需不出现到账承诺，refuse 需正确拒答。</p>
+    <h2>💬 生成质量（端到端答案覆盖）</h2>
+    <p class="sub">答案覆盖按每题期望行为判定：answer 需覆盖全部标准要点，no_commitment 需不出现到账承诺且覆盖标准要点，refuse 需正确拒答。标准要点按字面覆盖统计（忽略空白、标点、markdown 与引用编号）；「可回答题误拒」是知识库能答却被拒答门或自检拦下的题，越低越好。</p>
     <div class="stats">
       ${cards.map(([k, v, rate]) => `
         <div class="stat"><div class="k">${esc(k)}</div>
           <div class="v">${esc(v)}</div><div class="k">${esc(rate)}</div></div>
       `).join("")}
     </div>
-    <div id="answer-list" style="margin-top:16px"></div>
+    <details class="detail-fold">
+      <summary>答案明细（${a.answered} 题，点开查看）</summary>
+      <div id="answer-list" style="margin-top:14px"></div>
+    </details>
   </section>`;
 }
 
@@ -580,16 +1071,22 @@ function renderApp() {
   }
   $("content").innerHTML = [
     renderSummary(latest),
-    renderStrategyTable(latest.strategies || {}),
+    renderStrategyTable(latest),
+    renderQualitySection(latest),
+    renderFullData(latest),
+    renderAnswerSection(latest),
+    renderFaithfulness(latest),
+    renderFabrication(latest),
     `<section class="card">
       <h2>🧾 检索明细</h2>
       <p class="sub">每题四策略的排序名次与证据覆盖；点「展开排序」看前 10 条候选，绿色为 ground-truth 相关 chunk。</p>
       ${renderFilterBar()}
       <div id="retrieval-list"></div>
     </section>`,
-    renderAnswerSection(latest),
   ].join("");
   bindFilters();
+  bindQualityTabs();
+  bindFabrication();
   renderDetails();
 }
 

@@ -8,8 +8,8 @@
 关键约定：
 - ground-truth 按 **section_path** 解析成 chunk id 集合，再叠加 `must_contain` 收窄到具体 chunk。
   不用 chunk id：每次重建 id 都会漂，section 不会。
-- `D_reject` **不参与** Recall/MRR 汇总（没有正确答案可召回，混进去会污染其余桶的均值），
-  它单独一列「检索是否留空」。
+- `D_absent` **不参与** Recall/MRR 汇总（没有正确答案可召回，混进去会污染其余桶的均值）。
+  检索层总会返回候选，「留空率」为 0 是正常的；这个桶的拒答正确率在端到端评估里看。
 - **`hybrid_rerank` 这一路走的是 `rerank_stage`，不是 `recall`**：`recall` 只召回、不重排，
   `recall("hybrid_rerank", ...)` 与 `recall("hybrid", ...)` 是同一个 `hybrid_search` 调用，
   报告第 4 列会与第 3 列逐字节相同（Step 1 的裁定）。故第 4 路 = 先按 `hybrid` 召回，
@@ -57,23 +57,32 @@ def resolve_relevant(rows: list[dict], sample: dict) -> set[int]:
 
     `must_contain` 是逐条的**全部**都要出现在该 chunk 正文里（AND），用来把整个 section
     收窄到真正答得上问题的那一块 —— 比如 12 行同构表里只留「退款」那一行。
+    `must_contain_any_by_section` 只作用于指定 section，命中任一 token 即保留；多章节题
+    里用它收窄 12 行表，其余章节仍整段保留。
     """
     wanted = set(section_paths_of(sample))
     if not wanted:
         return set()
-    must = (sample.get("ground_truth") or {}).get("must_contain") or []
+    ground_truth = sample.get("ground_truth") or {}
+    must = ground_truth.get("must_contain") or []
+    any_by_section = ground_truth.get("must_contain_any_by_section") or {}
     relevant = set()
     for row in rows:
-        if row.get("section_path") not in wanted:
+        path = row.get("section_path")
+        if path not in wanted:
             continue
         body = f"{row.get('question') or ''}\n{row.get('answer') or ''}"
-        if all(token in body for token in must):
-            relevant.add(int(row["id"]))
+        if not all(token in body for token in must):
+            continue
+        any_tokens = any_by_section.get(path) or []
+        if any_tokens and not any(token in body for token in any_tokens):
+            continue
+        relevant.add(int(row["id"]))
     return relevant
 
 
 def score_one(retrieved_ids: list[int], relevant: set[int], k_values=K_VALUES) -> dict:
-    """一个样本的召回指标。relevant 为空（D_reject）返回空 dict，不参与汇总。"""
+    """一个样本的召回指标。relevant 为空（D_absent）返回空 dict，不参与汇总。"""
     if not relevant:
         return {}
     metrics: dict[str, float] = {}
@@ -140,7 +149,7 @@ def main() -> None:
                     rerank_degraded_ids.append(sample["id"])
             ids = [c.id for c in candidates]
             per_sample[strategy].append((sample, ids))
-            if sample["bucket"] == "D_reject":
+            if sample["bucket"] == "D_absent":
                 # 该桶的指标是「是否正确拒答」，这里只看召回是否为空（有候选 = 没拦住）
                 reject_outcomes[strategy].append(not ids)
 
@@ -158,7 +167,8 @@ def main() -> None:
         "",
         f"- 集合条数：{store.count()}；评估集：{len(samples)} 题；召回每条腿 Top-{settings.recall_top_k}，RRF k={settings.rrf_k}",
         "- ground-truth 按 section_path（+ must_contain 收窄）解析；chunk id 每次重建都会漂，不用它",
-        "- `D_reject` 桶不参与 Recall/MRR 汇总（没有正确答案可召回），单独看「检索留空率」",
+        "- `D_absent` 桶不参与 Recall/MRR 汇总（没有正确答案可召回）；检索层总会返回候选，"
+        "留空率 0 是正常的，拒答正确率看端到端评估",
         f"- `hybrid_rerank` 这一路走 `rerank_stage`（与 `run_pipeline` 同一函数）；"
         f"精排降级 **{len(rerank_degraded_ids)}/{len(samples)}** 题",
         "",
@@ -175,7 +185,7 @@ def main() -> None:
             "再确认 `rerank_stage` 真的被调用了。",
             "",
         ]
-    report += ["## 总表（不含 D_reject）", ""]
+    report += ["## 总表（不含 D_absent）", ""]
 
     header = "| 策略 | 题数 | Recall@5 | Recall@10 | MRR@10 |"
     report += [header, "|---|---|---|---|---|"]
@@ -183,7 +193,7 @@ def main() -> None:
         metrics = [
             score_one(ids, relevant_by_id[s["id"]])
             for s, ids in per_sample[strategy]
-            if s["bucket"] != "D_reject"
+            if s["bucket"] != "D_absent"
         ]
         metrics = [m for m in metrics if m]
         report.append(
@@ -212,12 +222,17 @@ def main() -> None:
             metrics = [
                 score_one(ids, relevant_by_id[s["id"]])
                 for s, ids in per_sample[strategy]
-                if s["difficulty"] == difficulty and s["bucket"] != "D_reject"
+                if s["difficulty"] == difficulty and s["bucket"] != "D_absent"
             ]
             groups.append((f"`{strategy}`", [m for m in metrics if m]))
         report += _table(f"分难度：{difficulty}", groups)
 
-    report += ["### D_reject 桶：检索留空率（越高越好）", "", "| 策略 | 留空率 |", "|---|---|"]
+    report += [
+        "### D_absent 桶：检索留空率（检索层不负责拒答，0 是正常的）",
+        "",
+        "| 策略 | 留空率 |",
+        "|---|---|",
+    ]
     for strategy in STRATEGIES:
         outcomes = reject_outcomes[strategy]
         rate = _mean([1.0 if ok else 0.0 for ok in outcomes])
@@ -225,7 +240,7 @@ def main() -> None:
     report.append("")
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = REPORT_DIR / f"ch04-retrieval-{date.today().isoformat()}.md"
+    out_path = REPORT_DIR / f"ch04-retrieval-{date.today().isoformat()}-{len(samples)}q.md"
     text = "\n".join(report)
     out_path.write_text(text, encoding="utf-8")
     print(text)
