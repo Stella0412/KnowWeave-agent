@@ -24,3 +24,17 @@ def gate_router(state) -> str:
     if state.get("retrieval_error"):
         return "fallback"
     return "agent" if state.get("evidence_strong") else "fallback"
+
+
+def make_should_continue(max_steps: int):
+    def should_continue(state) -> str:
+        messages = state.get("messages") or []
+        last = messages[-1] if messages else None
+        tool_calls = getattr(last, "tool_calls", None) if last is not None else None
+        if not tool_calls:
+            return "log"
+        if int(state.get("steps", 0)) >= max_steps:
+            return "fallback"
+        return "tools"
+
+    return should_continue
