@@ -215,3 +215,28 @@ async def test_log_writes_json_trace(caplog):
     assert payload["tools"] == ["query_order"]
     assert payload["stop_reason"] == "no_tool_calls"
     assert update["trace"]["tools"] == ["query_order"]
+
+
+async def test_log_only_counts_current_turn_tools(caplog):
+    caplog.set_level(logging.INFO, logger="knowweave.turn")
+    state = _state(
+        intent="logistics",
+        route="business",
+        stop_reason="no_tool_calls",
+        turn_msg_offset=2,
+        messages=[
+            HumanMessage(content="订单 1001 到哪了"),
+            AIMessage(content="", tool_calls=[
+                {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
+            ]),
+            AIMessage(content="已下单"),
+            HumanMessage(content="那物流呢"),
+            AIMessage(content="", tool_calls=[
+                {"name": "query_logistics", "args": {"order_id": "1001"}, "id": "c2", "type": "tool_call"}
+            ]),
+            AIMessage(content="已到达"),
+        ],
+    )
+    await nodes.log_turn(state, _runtime())
+    payload = json.loads(caplog.records[-1].message)
+    assert payload["tools"] == ["query_logistics"]

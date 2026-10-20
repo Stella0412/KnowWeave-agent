@@ -201,7 +201,10 @@ def _tool_names(messages) -> list[str]:
 async def log_turn(state, runtime):
     trace = dict(state.get("trace") or {})
     t0 = trace.get("t0")
-    trace["tools"] = _tool_names(state.get("messages", []))
+    # messages 里带着 checkpointer 的历史，只统计本轮新增的消息，
+    # 否则第 N 轮的 trace 会把前几轮的工具调用也重复算进去。
+    offset = int(state.get("turn_msg_offset") or 0)
+    trace["tools"] = _tool_names(state.get("messages", [])[offset:])
     trace["latency_ms"] = int((time.perf_counter() - t0) * 1000) if t0 else 0
     payload = {
         "conversation_id": state.get("conversation_id"),

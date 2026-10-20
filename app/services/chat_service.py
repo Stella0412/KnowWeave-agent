@@ -117,6 +117,8 @@ class ChatService:
         snapshot = await self._graph.aget_state(config)
         existing = list((snapshot.values or {}).get("messages") or []) if snapshot else []
         input_messages = [] if existing else [_row_to_message(row) for row in history_rows]
+        # checkpoint 为空时，历史来自 MySQL 的补种消息；两种情况都从这段历史之后开始算本轮。
+        turn_msg_offset = len(input_messages)
         input_messages.append(HumanMessage(content=message, id=f"db:{new_user_id}"))
 
         graph_input = {
@@ -134,6 +136,7 @@ class ChatService:
             "refusal_reason": None,
             "answer": None,
             "steps": 0,
+            "turn_msg_offset": turn_msg_offset,
             "tokens_used": 0,
             "suggested_actions": [],
             "fallback_reason": None,
@@ -145,9 +148,8 @@ class ChatService:
             conversation_id=conversation_id,
             source_files=default_source_files(),
         )
-        # checkpoint 为空时，历史来自 MySQL 的补种消息；切片要跳过这段补种，
-        # 否则 /chat/agent 会把上一轮的工具调用重复算进本轮载荷。
-        history_count = len(existing) if existing else len(history_rows)
+        # 切片要跳过补种/已有历史，否则 /chat/agent 会把上一轮的工具调用重复算进本轮载荷。
+        history_count = turn_msg_offset
         return _Prepared(
             conversation_id=conversation_id,
             created=created,
