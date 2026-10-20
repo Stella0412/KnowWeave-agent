@@ -165,6 +165,88 @@
   .feedback.locked .fb-btn:not(.active) { opacity: .35; cursor: default; }
   .fb-tip { font-size: 12px; color: var(--muted); }
 
+  /* ---- ch05 动作按钮与工单弹窗 ---- */
+  .action-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px dashed var(--border);
+  }
+  .action-btn {
+    border: 1px solid var(--brand);
+    background: #fff1e6;
+    color: var(--brand);
+    padding: 5px 14px;
+    border-radius: 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease, opacity .15s ease;
+  }
+  .action-btn:hover { background: var(--brand); color: #fff; }
+  .action-btn:disabled { opacity: .45; cursor: default; background: #f3f3f3; color: var(--muted); border-color: #ddd; }
+
+  .system-notice {
+    align-self: center;
+    padding: 2px 10px;
+    border-radius: 10px;
+    background: #f5f5f5;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .modal-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, .32);
+  }
+  .ticket-modal {
+    width: min(430px, calc(100vw - 32px));
+    background: #fff;
+    border-radius: 14px;
+    padding: 18px 18px 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .2);
+  }
+  .ticket-modal h3 { margin: 0 0 14px; font-size: 17px; }
+  .ticket-modal label { display: block; margin: 10px 0 0; font-size: 13px; color: #666; }
+  .ticket-modal select,
+  .ticket-modal textarea {
+    width: 100%;
+    margin-top: 5px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    background: #fbf7f3;
+    outline: none;
+  }
+  .ticket-modal textarea { resize: vertical; min-height: 86px; }
+  .ticket-modal select:focus,
+  .ticket-modal textarea:focus { border-color: var(--brand-2); background: #fff; }
+  .ticket-modal .modal-error { min-height: 18px; margin-top: 6px; color: #d93a3a; font-size: 12px; }
+  .ticket-modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+  .ticket-modal .modal-actions button {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: #555;
+    padding: 7px 16px;
+    border-radius: 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .ticket-modal .modal-actions button#ticketSubmit {
+    border-color: var(--brand);
+    background: var(--brand);
+    color: #fff;
+  }
+  .ticket-modal .modal-actions button:disabled { opacity: .5; cursor: not-allowed; }
+
   .bubble .error { color: #d93a3a; margin-top: 6px; }
 
   /* 流式光标 */
@@ -492,6 +574,7 @@
 
   function reset() {
     sessionId = null;
+    closeTicketModal();
     chatEl.innerHTML = '';
     addAssistantMessage('您好，我是知序客服知序～有什么可以帮您的吗？订单、物流、售后问题都可以问我哦。');
   }
@@ -518,6 +601,9 @@
         break;
       case 'citations':
         ctx.citations = ev.items || [];
+        break;
+      case 'actions':
+        ctx.actions = ev.items || [];
         break;
       case 'token':
         ctx.raw += ev.content;
@@ -667,7 +753,127 @@
     linkifyCitations(body, ctx.citations);
     bubbleEl.appendChild(body);
     attachFeedback(bubbleEl);
+    renderActions(bubbleEl, ctx.actions);
     scrollToBottom();
+  }
+
+  // ---- ch05 动作按钮：转人工纯前端；建工单走弹窗 + 端点 ----
+  function transferHuman(button) {
+    button.disabled = true;
+    const notice = document.createElement('div');
+    notice.className = 'system-notice';
+    notice.textContent = '已转接人工客服';
+    chatEl.appendChild(notice);
+    addAssistantMessage('您好，我是客服知序，请问有什么可以帮您的？');
+    scrollToBottom();
+  }
+
+  let ticketModal = null;
+
+  function closeTicketModal() {
+    if (ticketModal) {
+      if (ticketModal._onKey) {
+        document.removeEventListener('keydown', ticketModal._onKey);
+      }
+      ticketModal.remove();
+      ticketModal = null;
+    }
+  }
+
+  function openTicketModal(button) {
+    closeTicketModal();
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    const modal = document.createElement('div');
+    modal.className = 'ticket-modal';
+    modal.innerHTML = `
+      <h3>创建工单</h3>
+      <label>反馈类别
+        <select id="ticketType">
+          <option value="">请选择</option>
+          <option value="售后">售后</option>
+          <option value="投诉">投诉</option>
+          <option value="咨询">咨询</option>
+        </select>
+      </label>
+      <label>反馈描述
+        <textarea id="ticketDesc" rows="4" placeholder="请描述您遇到的问题"></textarea>
+      </label>
+      <div class="modal-error" id="ticketError"></div>
+      <div class="modal-actions">
+        <button type="button" id="ticketCancel">取消</button>
+        <button type="button" id="ticketSubmit">提交</button>
+      </div>`;
+    mask.appendChild(modal);
+    document.body.appendChild(mask);
+    ticketModal = mask;
+
+    const errorEl = modal.querySelector('#ticketError');
+    const submitEl = modal.querySelector('#ticketSubmit');
+    const close = () => closeTicketModal();
+
+    modal.querySelector('#ticketCancel').addEventListener('click', close);
+    mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        close();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    mask._onKey = onKey;
+
+    submitEl.addEventListener('click', async () => {
+      const ticketType = modal.querySelector('#ticketType').value;
+      const description = modal.querySelector('#ticketDesc').value.trim();
+      errorEl.textContent = '';
+      if (!ticketType) { errorEl.textContent = '请选择反馈类别'; return; }
+      if (!description) { errorEl.textContent = '请填写反馈描述'; return; }
+
+      submitEl.disabled = true;
+      try {
+        const resp = await fetch('/chat/ticket', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            ticket_type: ticketType,
+            description,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+        close();
+        document.removeEventListener('keydown', onKey);
+        button.disabled = true;
+        const notice = document.createElement('div');
+        notice.className = 'system-notice';
+        notice.textContent = '工单已创建 ' + data.ticket_no;
+        chatEl.appendChild(notice);
+        scrollToBottom();
+      } catch (e) {
+        errorEl.textContent = '建单失败：' + e.message;
+        submitEl.disabled = false;
+      }
+    });
+  }
+
+  function renderActions(bubbleEl, items) {
+    if (!items || !items.length) return;
+    const bar = document.createElement('div');
+    bar.className = 'action-bar';
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'action-btn';
+      button.textContent = item.label || (item.type === 'transfer_human' ? '转人工' : '建工单');
+      if (item.type === 'transfer_human') {
+        button.addEventListener('click', () => transferHuman(button));
+      } else if (item.type === 'create_ticket') {
+        button.addEventListener('click', () => openTicketModal(button));
+      }
+      bar.appendChild(button);
+    }
+    bubbleEl.appendChild(bar);
   }
 
   function appendError(bubbleEl, message) {
@@ -695,7 +901,7 @@
     bubble.appendChild(stream);
     bubble.appendChild(cursor);
 
-    const ctx = { raw: '', stream, finished: false, citations: [] };
+    const ctx = { raw: '', stream, finished: false, citations: [], actions: [] };
     setSending(true);
 
     try {
