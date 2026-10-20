@@ -4,12 +4,15 @@ version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "aiomysql>=0.3.2",
+    "aiosqlite>=0.22.1",
     "cryptography>=50.0.2",
     "fastapi>=0.143.0",
     "jieba>=0.42.1",
     "langchain-core>=1.6.9",
     "langchain-openai>=1.7.0",
     "langchain-text-splitters>=0.3.0",
+    "langgraph>=1.2.16",
+    "langgraph-checkpoint-sqlite>=3.1.2",
     "milvus-lite>=3.2.1",
     "pydantic>=2.14.0",
     "pydantic-settings>=2.15.0",
@@ -22,7 +25,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "aiosqlite>=0.22.1",
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",

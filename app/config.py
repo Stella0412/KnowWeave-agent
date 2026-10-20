@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
     token_budget: int = 4096
+    # ch05 图编排
+    langgraph_checkpoint_path: str = "data/langgraph_checkpoints.sqlite"
+    max_agent_steps: int = 6
 
     # MySQL（Docker 起，连接参数从 .env 读）
     mysql_host: str = "127.0.0.1"
