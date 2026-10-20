@@ -34,7 +34,8 @@ def build_rewrite_model(s: Settings | None = None):
     """进程级懒加载：每次检索都重建结构化模型会白扔一个 httpx 客户端。"""
     global _model
     if _model is None:
-        _model = build_structured_model(s or settings, RewriteOutput)
+        # 改写是检索链的输入，不是创作：temperature=0 保证同一题每轮召回同一批证据。
+        _model = build_structured_model(s or settings, RewriteOutput, temperature=0.0)
     return _model
 
 

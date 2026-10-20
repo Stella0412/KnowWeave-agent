@@ -76,7 +76,7 @@ def main() -> None:
         samples = [json.loads(line) for line in handle if line.strip()]
 
     generator = build_chat_model(settings)
-    judge_model = build_structured_model(settings, FaithJudgeOutput)
+    judge_model = build_structured_model(settings, FaithJudgeOutput, temperature=0.0)
     source_files = default_source_files()
     judge_name = settings.llm_model
 

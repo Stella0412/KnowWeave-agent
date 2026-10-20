@@ -342,6 +342,22 @@ class FaithCaseRepository:
         stmt = stmt.order_by(FaithCase.last_seen_at.desc(), FaithCase.id.desc()).limit(limit)
         return list((await self._session.execute(stmt)).scalars())
 
+    async def get_cases(self, eval_ids: list[str]) -> dict[str, FaithCase]:
+        """按题号批量取台账行；当前轮只渲染这些行，跨轮累计另行统计。"""
+        if not eval_ids:
+            return {}
+        stmt = select(FaithCase).where(FaithCase.eval_id.in_(eval_ids))
+        rows = list((await self._session.execute(stmt)).scalars())
+        return {row.eval_id: row for row in rows}
+
+    async def count_by_status(self) -> dict[str, int]:
+        stmt = select(FaithCase.status, func.count()).group_by(FaithCase.status)
+        counts: dict[str, int] = {}
+        for status, count in (await self._session.execute(stmt)).all():
+            key = status.value if hasattr(status, "value") else str(status)
+            counts[key] = int(count)
+        return counts
+
     async def set_status(
         self,
         eval_id: str,

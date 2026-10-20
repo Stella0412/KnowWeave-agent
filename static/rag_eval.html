@@ -373,6 +373,62 @@
     white-space: pre-wrap;
   }
 
+  /* 编造个案台账 */
+  .ledger-metrics {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px; margin: 14px 0;
+  }
+  .ledger-card {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; background: #fffdfa;
+  }
+  .ledger-card .k { font-size: 11.5px; color: var(--muted); }
+  .ledger-card .v {
+    font-size: 22px; font-weight: 650; margin: 2px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .ledger-card .h { font-size: 11px; color: var(--muted); }
+  .ledger-card.hot .v { color: var(--bad); }
+  .ledger-card.ok .v { color: var(--ok); }
+  .status-badge {
+    display: inline-block; font-size: 11px; padding: 1px 7px;
+    border-radius: 6px; border: 1px solid; white-space: nowrap;
+  }
+  .status-open { color: #9a6b00; background: #fff8e6; border-color: #f0d9a8; }
+  .status-resolved { color: var(--bad); background: var(--bad-bg); border-color: #f3cccc; }
+  .status-not-needed { color: var(--ok); background: var(--ok-bg); border-color: #cde9db; }
+  .ledger-case {
+    border: 1px solid var(--border); border-left: 3px solid var(--warn);
+    border-radius: 11px; padding: 12px 14px; margin-top: 10px;
+  }
+  .ledger-case.resolved { border-left-color: var(--bad); }
+  .ledger-case.not-needed { border-left-color: var(--ok); }
+  .ledger-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ledger-meta { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+  .ledger-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .ledger-actions button { font-size: 12px; padding: 5px 10px; }
+  /* 同权重下 .ledger-note 后写在 .hidden 之后会盖掉 display:none，必须显式提高权重 */
+  .ledger-note.hidden { display: none; }
+  .ledger-note { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .ledger-actions button.active {
+    outline: 2px solid var(--brand); outline-offset: 2px;
+    font-weight: 650;
+  }
+  .ledger-actions button.active::after { content: " ✓"; }
+  .ledger-note textarea {
+    flex: 1; min-width: 220px; min-height: 58px; resize: vertical;
+    font: inherit; font-size: 12.5px; padding: 7px 9px;
+    border: 1px solid var(--border); border-radius: 8px; background: #fff;
+  }
+  .ledger-note button { font-size: 12px; padding: 5px 10px; align-self: flex-start; }
+  .ledger-evidence { margin-top: 8px; }
+  .ledger-evidence summary { cursor: pointer; font-size: 12px; color: var(--brand); }
+  .evidence-item {
+    font-size: 12px; color: #555; border-top: 1px dashed var(--border);
+    padding: 8px 0; white-space: pre-wrap;
+  }
+  .evidence-item b { color: var(--brand); }
+
   @media (max-width: 760px) {
     .mini { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .rankings { grid-template-columns: repeat(4, 230px); }
@@ -838,6 +894,193 @@ function bindFabrication() {
   });
 }
 
+/* ---------- 编造个案台账 ---------- */
+
+const faithPending = {};
+
+function statusClass(status) {
+  if (status === "已解决") return "status-resolved";
+  if (status === "无需解决") return "status-not-needed";
+  return "status-open";
+}
+
+function renderFaithLedger() {
+  return `<section class="card" id="faith-ledger">
+    <div class="fab-head">
+      <h2>📒 编造个案台账 <span class="count-badge" id="ledger-badge">加载中…</span></h2>
+      <button class="fab-toggle" id="ledger-refresh" type="button">刷新台账</button>
+    </div>
+    <p class="sub">判出率 =（本轮裁判判出 + 库外该拒没拒）÷ 本轮评估题数；确认幻觉率 = 人工标为「已解决」的条数 ÷ 本轮评估题数，是下界。「无需解决」是裁判误报，不计入确认幻觉。</p>
+    <div id="faith-ledger-body"><div class="empty" style="padding:20px">加载台账…</div></div>
+  </section>`;
+}
+
+function renderFaithLedgerBody(data) {
+  const round = data.round || {};
+  const ledger = data.ledger || {};
+  const cards = [
+    ["判出率", pct(round.judged_rate, 2),
+      `${(round.judged || 0) + (round.missed_refusals || 0)} / ${data.samples || 0} 题`,
+      round.judged_rate > 0 ? "hot" : "ok"],
+    ["确认幻觉率", pct(round.confirmed_rate, 2),
+      `${round.resolved || 0} / ${data.samples || 0} 题（下界）`,
+      round.confirmed_rate > 0 ? "hot" : "ok"],
+    ["待处置", String(round.open || 0), "未解决，等人过目",
+      round.open ? "" : "ok"],
+    ["裁判误报", String(round.not_needed || 0), "已标「无需解决」", "ok"],
+    ["跨轮台账", String(ledger.total || 0),
+      `未解决 ${ledger.open || 0} · 已解决 ${ledger.resolved || 0} · 无需解决 ${ledger.not_needed || 0}`,
+      ""],
+  ];
+
+  const metrics = `<div class="ledger-metrics">
+    ${cards.map(([k, v, h, cls]) => `
+      <div class="ledger-card ${cls}">
+        <div class="k">${esc(k)}</div>
+        <div class="v">${esc(v)}</div>
+        <div class="h">${esc(h)}</div>
+      </div>`).join("")}
+  </div>`;
+
+  if (!(data.cases || []).length) {
+    return `${metrics}<div class="empty" style="padding:20px">本轮没有判出编造个案。跨轮台账累计 ${esc(ledger.total || 0)} 条。</div>`;
+  }
+
+  return `${metrics}${data.cases.map(renderFaithCase).join("")}`;
+}
+
+function renderFaithCase(c) {
+  const cls = c.status === "已解决" ? "resolved" : c.status === "无需解决" ? "not-needed" : "";
+  const source = c.source === "missed_refusal"
+    ? tag("该拒没拒", "bad") : tag("裁判判出");
+  const evidence = (c.citations || []).map((item) => `
+    <div class="evidence-item">
+      <b>[${esc(item.n)}]</b> ${esc(item.section_path || item.doc_root || "")}
+      ${item.row_category ? `<span class="muted">（${esc(item.row_category)}）</span>` : ""}
+      <div>问：${esc(item.question || "")}</div>
+      <div>答：${esc(item.answer || "")}</div>
+    </div>`).join("");
+  const noteId = `faith-note-${c.eval_id}`;
+  return `<div class="ledger-case ${cls}">
+    <div class="ledger-head">
+      <span class="qid">${esc(c.eval_id)}</span>
+      <span class="qtext">${esc(c.query)}</span>
+      ${tag(BUCKET_LABEL[c.bucket] || c.bucket || "—")}
+      ${source}
+      <span class="status-badge ${statusClass(c.status)}">${esc(c.status)}</span>
+      <span class="ledger-meta">${c.seen_count > 1 ? `出现 ${c.seen_count} 次` : "首次出现"}</span>
+    </div>
+    <div class="fab-label">裁判理由</div>
+    <p class="fab-reason">${formatAnswer(c.reason || "（无）")}</p>
+    <div class="fab-label">生成答案（原文）</div>
+    <div class="answer">${formatAnswer(c.answer || "(空)")}</div>
+    ${c.resolution ? `<div class="fab-label">处置说明</div>
+      <p class="fab-reason">${formatAnswer(c.resolution)}</p>` : ""}
+    <details class="ledger-evidence">
+      <summary>证据原文（本轮喂进去的 ${(c.citations || []).length} 条）</summary>
+      ${evidence || '<div class="empty" style="padding:10px">本轮没有证据快照。</div>'}
+    </details>
+    <div class="ledger-actions">
+      <button type="button" data-faith-action="已解决" data-faith-id="${esc(c.eval_id)}">标为真幻觉（已解决）</button>
+      <button type="button" class="secondary" data-faith-action="无需解决" data-faith-id="${esc(c.eval_id)}">裁判误报（无需解决）</button>
+      ${c.status !== "未解决"
+        ? `<button type="button" class="secondary" data-faith-action="未解决" data-faith-id="${esc(c.eval_id)}">退回未解决</button>`
+        : ""}
+    </div>
+    <div class="ledger-note hidden" id="${noteId}">
+      <textarea placeholder="必须留一句交代：怎么解决的，或为什么不用改"></textarea>
+      <button type="button" data-faith-submit="1" data-faith-id="${esc(c.eval_id)}">提交处置</button>
+      <button type="button" class="secondary" data-faith-cancel="1">取消</button>
+    </div>
+  </div>`;
+}
+
+async function submitFaithCase(evalId, status, resolution) {
+  try {
+    const resp = await fetch(`/rag-eval/api/faith-cases/${encodeURIComponent(evalId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, resolution }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
+    await loadFaithLedger();
+  } catch (err) {
+    alert("处置失败：" + err.message);
+  }
+}
+
+function bindFaithLedger() {
+  const body = $("faith-ledger-body");
+  if (!body) return;
+
+  body.querySelectorAll("[data-faith-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const evalId = btn.dataset.faithId;
+      const status = btn.dataset.faithAction;
+      if (status === "未解决") {
+        submitFaithCase(evalId, status, null);
+        return;
+      }
+      const note = $(`faith-note-${evalId}`);
+      if (!note) return;
+      faithPending[evalId] = status;
+      btn.closest(".ledger-case").querySelectorAll("[data-faith-action]").forEach((b) => {
+        b.classList.toggle("active", b === btn);
+      });
+      note.classList.remove("hidden");
+      note.querySelector("textarea").focus();
+    });
+  });
+
+  body.querySelectorAll("[data-faith-submit]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const evalId = btn.dataset.faithId;
+      const status = faithPending[evalId];
+      if (!status) {
+        alert("请先选择处置方式：标为真幻觉，还是裁判误报。");
+        return;
+      }
+      const note = $(`faith-note-${evalId}`);
+      const resolution = note ? note.querySelector("textarea").value.trim() : "";
+      if (!resolution) {
+        alert("处置必须留一句交代：怎么解决的，或为什么不用改。");
+        return;
+      }
+      submitFaithCase(evalId, status, resolution);
+    });
+  });
+
+  body.querySelectorAll("[data-faith-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const note = btn.closest(".ledger-note");
+      const evalId = note.id.replace(/^faith-note-/, "");
+      delete faithPending[evalId];
+      note.parentElement.querySelectorAll("[data-faith-action]").forEach((b) => {
+        b.classList.remove("active");
+      });
+      note.classList.add("hidden");
+    });
+  });
+}
+
+async function loadFaithLedger() {
+  const body = $("faith-ledger-body");
+  const badge = $("ledger-badge");
+  if (!body) return;
+  try {
+    const resp = await fetch("/rag-eval/api/faith-cases");
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    body.innerHTML = renderFaithLedgerBody(data);
+    if (badge) badge.textContent = `${data.round.open} 待处置 / ${data.cases.length} 本轮`;
+    bindFaithLedger();
+  } catch (err) {
+    body.innerHTML = `<div class="empty" style="padding:20px">台账加载失败：${esc(err.message)}</div>`;
+    if (badge) badge.textContent = "不可用";
+  }
+}
+
 /* ---------- 筛选 ---------- */
 
 function renderFilterBar() {
@@ -1077,6 +1320,7 @@ function renderApp() {
     renderAnswerSection(latest),
     renderFaithfulness(latest),
     renderFabrication(latest),
+    renderFaithLedger(),
     `<section class="card">
       <h2>🧾 检索明细</h2>
       <p class="sub">每题四策略的排序名次与证据覆盖；点「展开排序」看前 10 条候选，绿色为 ground-truth 相关 chunk。</p>
@@ -1088,6 +1332,9 @@ function renderApp() {
   bindQualityTabs();
   bindFabrication();
   renderDetails();
+  const ledgerRefresh = $("ledger-refresh");
+  if (ledgerRefresh) ledgerRefresh.addEventListener("click", loadFaithLedger);
+  loadFaithLedger();
 }
 
 /* ---------- 运行状态 ---------- */

@@ -62,3 +62,23 @@ def test_build_bm25_query_dedupes_repeated_terms():
 
     result = RewriteResult(standard_query="运费怎么算", synonyms=["运费怎么算"], degraded=False)
     assert build_bm25_query("运费怎么算", result) == "运费怎么算"
+
+
+def test_rewrite_model_is_built_deterministically(monkeypatch):
+    """改写是检索链的输入；temperature=0.7 会让同一题每次评估召回不同的证据。"""
+    import app.rag.rewrite as rewrite_mod
+
+    seen = {}
+
+    def fake_build(settings_, schema, **kwargs):
+        seen["schema"] = schema
+        seen["temperature"] = kwargs.get("temperature")
+        return object()
+
+    monkeypatch.setattr(rewrite_mod, "build_structured_model", fake_build)
+    monkeypatch.setattr(rewrite_mod, "_model", None)
+
+    rewrite_mod.build_rewrite_model()
+
+    assert seen["schema"] is RewriteOutput
+    assert seen["temperature"] == 0.0

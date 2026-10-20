@@ -172,6 +172,43 @@ def test_answer_summary_counts_answerable_questions_refused_by_mistake():
     assert summary["refusal_total"] == 1
 
 
+def test_answer_pass_records_rewrite_and_rerank_for_debugging(monkeypatch):
+    """低置信拒答要能回溯：这轮到底改写成了什么、精排给了多少分。"""
+
+    class FakeResult:
+        refused = False
+        refusal_source = None
+        refusal_reason = None
+        rerank_degraded = False
+        rewrite_degraded = False
+        citations = []
+        evidence_text = "[1] 答案"
+        standard_query = "标准问法"
+        rerank_score = 0.87
+
+    class FakeVerdict:
+        faithful = True
+        reason = "结论：忠实"
+
+    monkeypatch.setattr(rag_eval_service, "run_pipeline", lambda *a, **k: FakeResult())
+    monkeypatch.setattr(rag_eval_service, "build_chat_model", lambda *a, **k: object())
+    monkeypatch.setattr(rag_eval_service, "build_structured_model", lambda *a, **k: object())
+    monkeypatch.setattr(rag_eval_service, "generate_answer", lambda *a, **k: "答案")
+    monkeypatch.setattr(rag_eval_service, "judge", lambda *a, **k: FakeVerdict())
+    monkeypatch.setattr(rag_eval_service, "default_source_files", lambda: {})
+
+    samples = [{
+        "id": "A1", "bucket": "A_policy", "query": "q",
+        "expected_behavior": "answer", "expected_points": ["答案"],
+    }]
+    questions = [{"id": "A1"}]
+
+    rag_eval_service._run_answer_pass("run", samples, questions, 0, 1)
+
+    assert questions[0].get("answer_standard_query") == "标准问法"
+    assert questions[0].get("rerank_score") == 0.87
+
+
 def test_read_latest_attaches_models_from_settings(tmp_path, monkeypatch):
     # 旧结果文件里没有模型名；页头的「嵌入/重排」「裁判模型」按当前配置补，
     # 免得为了看模型名重跑一轮 300 题。
@@ -197,3 +234,126 @@ def test_read_latest_keeps_existing_models_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(rag_eval_service, "LATEST_PATH", path)
 
     assert rag_eval_service.read_latest()["models"] == saved
+
+
+def _samples(ids: list[str]) -> list[dict]:
+    return [
+        {
+            "id": sample_id,
+            "bucket": "A_policy",
+            "query": f"问{sample_id}",
+            "expected_behavior": "answer",
+            "expected_points": ["要点"],
+            "ground_truth": {"section_paths": ["退货退款政策 > 退款时效"]},
+        }
+        for sample_id in ids
+    ]
+
+
+def test_load_checkpoint_rejects_a_different_sample_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(rag_eval_service, "CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    rag_eval_service._save_checkpoint(
+        {"mode": "full", "sample_ids": ["A1", "A2"], "started_at": "t"},
+        [{"id": "A1"}],
+    )
+
+    assert rag_eval_service._load_checkpoint("full", ["A1", "A2"]) is not None
+    assert rag_eval_service._load_checkpoint("full", ["A1", "A2", "A3"]) is None
+    assert rag_eval_service._load_checkpoint("retrieval", ["A1", "A2"]) is None
+
+
+def test_retrieval_pass_resumes_from_checkpoint(tmp_path, monkeypatch):
+    """断网重跑时，已经检索过的题不再调改写/嵌入，直接沿用检查点里的结果。"""
+    monkeypatch.setattr(rag_eval_service, "CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    seen: list[str] = []
+
+    class Rewrite:
+        standard_query = "标准问法"
+        degraded = False
+
+    def fake_rewrite(query):
+        seen.append(query)
+        return Rewrite()
+
+    monkeypatch.setattr(rag_eval_service, "rewrite_query", fake_rewrite)
+    monkeypatch.setattr(rag_eval_service, "embed_query", lambda query: [])
+    monkeypatch.setattr(rag_eval_service, "build_bm25_query", lambda raw, rewrite: raw)
+    monkeypatch.setattr(rag_eval_service, "recall", lambda *a, **k: [])
+    monkeypatch.setattr(rag_eval_service, "resolve_relevant", lambda rows, sample: set())
+
+    done = [{"id": "A1", "bucket": "A_policy", "strategies": {}}]
+    questions, completed = rag_eval_service._run_retrieval_pass(
+        "run",
+        _samples(["A1", "A2", "A3"]),
+        [],
+        object(),
+        0,
+        6,
+        existing=done,
+        checkpoint_meta={
+            "mode": "full",
+            "sample_ids": ["A1", "A2", "A3"],
+            "started_at": "2026-10-20T12:00:00",
+        },
+    )
+
+    assert seen == ["问A2", "问A3"]
+    assert [q["id"] for q in questions] == ["A1", "A2", "A3"]
+    assert completed == 3
+    saved = json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))
+    assert [q["id"] for q in saved["questions"]] == ["A1", "A2", "A3"]
+
+
+def test_answer_pass_skips_questions_already_answered(tmp_path, monkeypatch):
+    """生成/裁判阶段断网后重跑，已答完的题不再重跑，避免又烧一遍 token。"""
+    monkeypatch.setattr(rag_eval_service, "CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    called: list[str] = []
+
+    class FakeResult:
+        refused = False
+        refusal_source = None
+        refusal_reason = None
+        rerank_degraded = False
+        rewrite_degraded = False
+        citations = []
+        evidence_text = "[1] 答案"
+        standard_query = "标准问法"
+        rerank_score = 0.9
+
+    class FakeVerdict:
+        faithful = True
+        reason = "结论：忠实"
+
+    monkeypatch.setattr(
+        rag_eval_service,
+        "run_pipeline",
+        lambda query, **k: (called.append(query), FakeResult())[1],
+    )
+    monkeypatch.setattr(rag_eval_service, "build_chat_model", lambda *a, **k: object())
+    monkeypatch.setattr(rag_eval_service, "build_structured_model", lambda *a, **k: object())
+    monkeypatch.setattr(rag_eval_service, "generate_answer", lambda *a, **k: "答案")
+    monkeypatch.setattr(rag_eval_service, "judge", lambda *a, **k: FakeVerdict())
+    monkeypatch.setattr(rag_eval_service, "default_source_files", lambda: {})
+
+    samples = _samples(["A1", "A2"])
+    questions = [
+        {"id": "A1", "bucket": "A_policy", "answer": "已经答过", "faithful": True},
+        {"id": "A2", "bucket": "A_policy"},
+    ]
+    completed = rag_eval_service._run_answer_pass(
+        "run",
+        samples,
+        questions,
+        0,
+        2,
+        checkpoint_meta={
+            "mode": "full",
+            "sample_ids": ["A1", "A2"],
+            "started_at": "2026-10-20T12:00:00",
+        },
+    )
+
+    assert called == ["问A2"]
+    assert questions[0]["answer"] == "已经答过"
+    assert questions[1]["answer"] == "答案"
+    assert completed == 2

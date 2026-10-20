@@ -26,6 +26,9 @@ from typing import Any
 
 from app.config import settings
 from app.core.llm import build_chat_model, build_structured_model
+from app.db.engine import SessionFactory
+from app.db.models import FaithCaseStatus
+from app.db.repository import FaithCaseRepository
 from app.kb.milvus_client import get_milvus_client
 from app.prompts.rag import FaithJudgeOutput
 from app.rag.evidence import Evidence
@@ -45,8 +48,12 @@ logger = logging.getLogger(__name__)
 
 RUN_DIR = Path("data/rag_eval")
 LATEST_PATH = RUN_DIR / "latest.json"
+FAITH_SYNC_PATH = RUN_DIR / "faith_synced.json"
+# 断点续跑：300 题 full 要跑几十分钟，中途断网不该把已完成的部分作废。
+CHECKPOINT_PATH = RUN_DIR / "checkpoint.json"
 MUST_CONTAIN_SCAN = 16384
 VALID_MODES = ("retrieval", "full")
+FAITH_STATUSES = tuple(status.value for status in FaithCaseStatus)
 
 _state_lock = threading.Lock()
 _state: dict[str, Any] = {
@@ -274,12 +281,55 @@ def _set_progress(run_id: str, phase: str, done: int, total: int, message: str) 
         }
 
 
+def _save_checkpoint(meta: dict, questions: list[dict]) -> None:
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {**meta, "saved_at": _now(), "questions": questions}
+    tmp = CHECKPOINT_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(CHECKPOINT_PATH)
+
+
+def _load_checkpoint(mode: str, sample_ids: list[str]) -> dict | None:
+    """只认同一模式、同一批题目的检查点；评估集变了就重新开始，不混用旧结果。"""
+    if not CHECKPOINT_PATH.exists():
+        return None
+    try:
+        payload = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if payload.get("mode") != mode or payload.get("sample_ids") != sample_ids:
+        return None
+    if not isinstance(payload.get("questions"), list):
+        return None
+    return payload
+
+
+def _clear_checkpoint() -> None:
+    CHECKPOINT_PATH.unlink(missing_ok=True)
+
+
 def _run_retrieval_pass(
-    run_id: str, samples: list[dict], rows: list[dict], store, done: int, total: int
+    run_id: str,
+    samples: list[dict],
+    rows: list[dict],
+    store,
+    done: int,
+    total: int,
+    *,
+    existing: list[dict] | None = None,
+    checkpoint_meta: dict | None = None,
 ) -> tuple[list[dict], int]:
-    questions = []
-    relevant_by_id = {sample["id"]: resolve_relevant(rows, sample) for sample in samples}
+    questions = list(existing or [])
+    finished = {question.get("id") for question in questions}
+    relevant_by_id = {
+        sample["id"]: resolve_relevant(rows, sample)
+        for sample in samples
+        if sample["id"] not in finished
+    }
     for sample in samples:
+        if sample["id"] in finished:
+            done += 1
+            continue
         _set_progress(run_id, "retrieval", done, total, f"检索 {sample['id']}…")
         rewrite = rewrite_query(sample["query"])
         effective_query = rewrite.standard_query or sample["query"]
@@ -330,26 +380,43 @@ def _run_retrieval_pass(
             "strategies": strategies,
         })
         done += 1
+        if checkpoint_meta and len(questions) % 10 == 0:
+            _save_checkpoint(checkpoint_meta, questions)
+    if checkpoint_meta:
+        _save_checkpoint(checkpoint_meta, questions)
     return questions, done
 
 
 def _run_answer_pass(
-    run_id: str, samples: list[dict], questions: list[dict], done: int, total: int
+    run_id: str,
+    samples: list[dict],
+    questions: list[dict],
+    done: int,
+    total: int,
+    *,
+    checkpoint_meta: dict | None = None,
 ) -> int:
     by_id = {q["id"]: q for q in questions}
     generator = build_chat_model(settings)
-    judge_model = build_structured_model(settings, FaithJudgeOutput)
+    judge_model = build_structured_model(settings, FaithJudgeOutput, temperature=0.0)
     source_files = default_source_files()
 
     for sample in samples:
-        _set_progress(run_id, "answer", done, total, f"生成 {sample['id']}…")
         question = by_id[sample["id"]]
+        if "answer" in question:
+            done += 1
+            continue
+        _set_progress(run_id, "answer", done, total, f"生成 {sample['id']}…")
         result = run_pipeline(sample["query"], source_files=source_files)
         question["refused"] = bool(result.refused)
         question["refusal_source"] = result.refusal_source
         question["refusal_reason"] = result.refusal_reason
         question["degraded"] = bool(result.rerank_degraded or result.rewrite_degraded)
         question["citations"] = result.citations
+        # 低置信拒答的回溯依据：这轮实际改写成了什么、精排给了多少分。
+        # 检索段与答案段各改写一次，分开记才能判断低分该怪改写还是怪精排。
+        question["answer_standard_query"] = result.standard_query
+        question["rerank_score"] = result.rerank_score
 
         if result.refused:
             answer = refusal_text(sample["query"])
@@ -373,6 +440,10 @@ def _run_answer_pass(
             ok, violations = check_no_commitment(answer)
             question["negative"] = {"ok": bool(ok), "violations": violations}
         done += 1
+        if checkpoint_meta and done % 5 == 0:
+            _save_checkpoint(checkpoint_meta, questions)
+    if checkpoint_meta:
+        _save_checkpoint(checkpoint_meta, questions)
     return done
 
 
@@ -382,16 +453,41 @@ def run_evaluation(mode: str = "retrieval", run_id: str = "manual") -> dict:
         raise ValueError(f"未知评估模式：{mode}（可选：{'/'.join(VALID_MODES)}）")
 
     samples = load_samples()
+    sample_ids = [sample["id"] for sample in samples]
+    checkpoint = _load_checkpoint(mode, sample_ids)
     store = get_milvus_client()
     store.ensure_collection()
     rows = store.query_by_expr("id > 0", limit=MUST_CONTAIN_SCAN)
     collection_count = store.count()
     total = len(samples) * (2 if mode == "full" else 1)
 
-    started_at = _now()
-    questions, done = _run_retrieval_pass(run_id, samples, rows, store, 0, total)
+    # 续跑时沿用第一次启动的时间，结论文档里看到的是整轮耗时。
+    started_at = (checkpoint or {}).get("started_at") or _now()
+    checkpoint_meta = {
+        "mode": mode,
+        "sample_ids": sample_ids,
+        "started_at": started_at,
+    }
+    questions = (checkpoint or {}).get("questions") or []
+    questions, done = _run_retrieval_pass(
+        run_id,
+        samples,
+        rows,
+        store,
+        0,
+        total,
+        existing=questions,
+        checkpoint_meta=checkpoint_meta,
+    )
     if mode == "full":
-        done = _run_answer_pass(run_id, samples, questions, done, total)
+        done = _run_answer_pass(
+            run_id,
+            samples,
+            questions,
+            done,
+            total,
+            checkpoint_meta=checkpoint_meta,
+        )
 
     result = {
         "run_id": run_id,
@@ -406,6 +502,8 @@ def run_evaluation(mode: str = "retrieval", run_id: str = "manual") -> dict:
         "answers": _answer_summary(questions),
         "questions": questions,
     }
+    # 本轮已经完整跑完，删掉检查点，下一次「重跑」从零开始。
+    _clear_checkpoint()
     _set_progress(run_id, "done", total, total, "完成")
     return result
 
@@ -464,3 +562,212 @@ def start_run(mode: str) -> tuple[bool, dict]:
 def get_status() -> dict:
     with _state_lock:
         return deepcopy(_state)
+
+
+# ---------------------------------------------------------------------------
+# 编造个案台账：本轮判出 + 人工处置状态
+# ---------------------------------------------------------------------------
+
+
+def _current_faith_cases(latest: dict | None) -> list[dict]:
+    """从最近一轮 full 评估里取出「裁判判编造 + 该拒没拒」两类个案。
+
+    只算本轮：判出率的分母是评估题数，分子是这两类；历史题在台账里跨轮累计，
+    但不参与本轮指标，否则一轮旧账会把确认幻觉率一直拖住。
+    """
+    if not latest or not latest.get("answers"):
+        return []
+    judge_model = (latest.get("models") or {}).get("judge") or settings.llm_model
+    cases: list[dict] = []
+    for question in latest.get("questions", []):
+        base = {
+            "eval_id": question.get("id"),
+            "bucket": question.get("bucket") or "unknown",
+            "query": question.get("query") or "",
+            "answer": question.get("answer") or "",
+            "citations": question.get("citations") or [],
+            "judge_model": judge_model,
+        }
+        if question.get("faithful") is False:
+            cases.append({
+                **base,
+                "source": "judge",
+                "reason": question.get("judge_reason") or "（裁判未给理由）",
+            })
+        elif (
+            question.get("expected_behavior") == "refuse"
+            and question.get("refused") is False
+        ):
+            cases.append({
+                **base,
+                "source": "missed_refusal",
+                "reason": "应拒答却给出了回答，且知识库里没有对应依据",
+            })
+    return cases
+
+
+def _read_faith_sync_marker() -> dict:
+    if not FAITH_SYNC_PATH.exists():
+        return {}
+    try:
+        return json.loads(FAITH_SYNC_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_faith_sync_marker(run_id: str, count: int) -> None:
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {"run_id": run_id, "synced_at": _now(), "count": count}
+    FAITH_SYNC_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+async def sync_faith_cases(force: bool = False) -> int:
+    """把本轮判出的个案写进台账；同一 run_id 只写一次，避免刷页面把处置状态冲掉。"""
+    latest = read_latest()
+    if not latest:
+        return 0
+    run_id = latest.get("run_id")
+    marker = _read_faith_sync_marker()
+    if not force and run_id and marker.get("run_id") == run_id:
+        return 0
+
+    cases = _current_faith_cases(latest)
+    if cases:
+        async with SessionFactory() as session:
+            repo = FaithCaseRepository(session)
+            for case in cases:
+                await repo.upsert_case(
+                    eval_id=case["eval_id"],
+                    bucket=case["bucket"],
+                    query=case["query"],
+                    strategy=getattr(settings, "rag_strategy", "hybrid_rerank"),
+                    answer=case["answer"],
+                    reason=case["reason"],
+                    citations=case["citations"],
+                    judge_model=case["judge_model"],
+                )
+            await session.commit()
+    if run_id:
+        _write_faith_sync_marker(run_id, len(cases))
+    return len(cases)
+
+
+def _faith_row_payload(row, fallback: dict) -> dict:
+    status = row.status.value if hasattr(row.status, "value") else str(row.status)
+    return {
+        **fallback,
+        "status": status,
+        "seen_count": row.seen_count,
+        "first_seen_at": row.first_seen_at.isoformat(timespec="seconds")
+        if row.first_seen_at
+        else None,
+        "last_seen_at": row.last_seen_at.isoformat(timespec="seconds")
+        if row.last_seen_at
+        else None,
+        "resolution": row.resolution,
+        "resolved_at": row.resolved_at.isoformat(timespec="seconds")
+        if row.resolved_at
+        else None,
+    }
+
+
+async def list_faith_cases() -> dict:
+    """台账页数据：本轮指标 + 本轮个案 + 跨轮累计。"""
+    await sync_faith_cases()
+    latest = read_latest()
+    current = _current_faith_cases(latest)
+    async with SessionFactory() as session:
+        repo = FaithCaseRepository(session)
+        rows = await repo.get_cases([case["eval_id"] for case in current])
+        counts = await repo.count_by_status()
+
+    payloads = []
+    for case in current:
+        row = rows.get(case["eval_id"])
+        if row is None:
+            payloads.append({
+                **case,
+                "status": FaithCaseStatus.OPEN.value,
+                "seen_count": 1,
+                "first_seen_at": None,
+                "last_seen_at": None,
+                "resolution": None,
+                "resolved_at": None,
+            })
+        else:
+            payloads.append(_faith_row_payload(row, case))
+
+    status_order = {
+        FaithCaseStatus.OPEN.value: 0,
+        FaithCaseStatus.RESOLVED.value: 1,
+        FaithCaseStatus.NOT_NEEDED.value: 2,
+    }
+    payloads.sort(key=lambda item: (status_order.get(item["status"], 9), item["eval_id"]))
+
+    samples = int((latest or {}).get("samples") or len(payloads) or 0)
+    judged = sum(1 for item in payloads if item["source"] == "judge")
+    missed = sum(1 for item in payloads if item["source"] == "missed_refusal")
+    resolved = sum(
+        1 for item in payloads if item["status"] == FaithCaseStatus.RESOLVED.value
+    )
+    not_needed = sum(
+        1 for item in payloads if item["status"] == FaithCaseStatus.NOT_NEEDED.value
+    )
+    open_cases = sum(
+        1 for item in payloads if item["status"] == FaithCaseStatus.OPEN.value
+    )
+    denom = samples or 1
+
+    return {
+        "run_id": (latest or {}).get("run_id"),
+        "samples": samples,
+        "round": {
+            "judged": judged,
+            "missed_refusals": missed,
+            "resolved": resolved,
+            "not_needed": not_needed,
+            "open": open_cases,
+            "judged_rate": (judged + missed) / denom,
+            "confirmed_rate": resolved / denom,
+        },
+        "ledger": {
+            "total": sum(counts.values()),
+            "open": counts.get(FaithCaseStatus.OPEN.value, 0),
+            "resolved": counts.get(FaithCaseStatus.RESOLVED.value, 0),
+            "not_needed": counts.get(FaithCaseStatus.NOT_NEEDED.value, 0),
+        },
+        "cases": payloads,
+    }
+
+
+async def resolve_faith_case(
+    eval_id: str, status: str, resolution: str | None = None
+) -> dict | None:
+    """人工处置：标已解决/无需解决必须留一句交代；退回未解决时清空交代。"""
+    status = (status or "").strip()
+    if status not in FAITH_STATUSES:
+        raise ValueError(f"未知处置状态：{status}（可选：{'/'.join(FAITH_STATUSES)}）")
+    resolution = (resolution or "").strip()
+    if status != FaithCaseStatus.OPEN.value and not resolution:
+        raise ValueError("处置必须留一句交代：怎么解决的，或为什么不用改")
+    if len(resolution) > 300:
+        raise ValueError("处置说明最多 300 字")
+
+    await sync_faith_cases()
+    async with SessionFactory() as session:
+        repo = FaithCaseRepository(session)
+        row = await repo.set_status(eval_id, status, resolution or None)
+        if row is None:
+            return None
+        await session.commit()
+        fallback = {
+            "eval_id": row.eval_id,
+            "bucket": row.bucket,
+            "query": row.query,
+            "answer": row.answer,
+            "reason": row.reason,
+            "citations": row.citations or [],
+            "source": "judge",
+            "judge_model": row.judge_model,
+        }
+        return _faith_row_payload(row, fallback)

@@ -16,6 +16,8 @@ def build_embeddings(s: Settings | None = None) -> OpenAIEmbeddings:
         base_url=s.embed_base_url,
         api_key=s.embed_api_key,
         check_embedding_ctx_length=False,
+        # 与对话/裁判模型一致：短时 DNS 抖动靠重试扛过去，不让整轮评估中断。
+        max_retries=8,
     )
 
 

@@ -205,6 +205,42 @@ def test_self_check_receives_user_raw_words_not_the_rewritten_query():
     assert "邮费怎么算" in self_check_prompt
 
 
+def test_self_check_model_is_built_deterministically(monkeypatch):
+    """自评是拒答闸门；默认 temperature=0.7 会让同一题两次评估给出不同拒答结论。"""
+    import app.core.llm as llm
+
+    from app.rag import pipeline
+
+    seen = {}
+
+    class FakeChecker:
+        def invoke(self, messages):
+            return SelfCheckOutput(sufficient=True, reason="够")
+
+    def fake_build(settings_, schema, **kwargs):
+        seen["schema"] = schema
+        seen["temperature"] = kwargs.get("temperature")
+        return FakeChecker()
+
+    monkeypatch.setattr(llm, "build_structured_model", fake_build)
+
+    sufficient, _reason = pipeline._self_check("邮费怎么算", "[1] 满 99 包邮", model=None)
+
+    assert sufficient is True
+    assert seen["schema"] is SelfCheckOutput
+    assert seen["temperature"] == 0.0
+
+
+def test_result_exposes_rerank_score_for_traceability():
+    """评估要能区分「改写把分压低了」和「精排本身不给分」。"""
+    assert getattr(_run(), "rerank_score", None) == 0.8
+
+
+def test_rerank_score_is_none_when_rerank_degrades():
+    result = _run(reranker=FakeReranker(boom=RerankError("上游 503")))
+    assert getattr(result, "rerank_score", "missing") is None
+
+
 def test_empty_recall_refuses_via_retrieval_gate():
     result = _run(milvus=FakeMilvus(hits=[]))
     assert result.refused is True

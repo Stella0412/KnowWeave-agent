@@ -38,3 +38,5 @@ def test_build_embeddings_uses_settings():
     assert inner.openai_api_base == "https://example.invalid/v1"
     # 第三方端点必须关掉 token 化输入（否则发 token 数组，端点不认）
     assert inner.check_embedding_ctx_length is False
+    # 嵌入是检索链的硬依赖：一次 DNS 抖动不该让整轮 300 题评估作废
+    assert inner.max_retries == 8

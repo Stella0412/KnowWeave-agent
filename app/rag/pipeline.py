@@ -58,6 +58,8 @@ class RagResult:
     items: list[Evidence] = field(default_factory=list)
     rewrite_degraded: bool = False
     rerank_degraded: bool = False
+    # 精排真的跑成时的最高分；None 表示未精排或精排降级（与拒答闸门的语义一致）。
+    rerank_score: float | None = None
 
 
 def _refused(raw_query: str, strategy: str, decision: RefusalDecision, **extra) -> RagResult:
@@ -125,7 +127,7 @@ def run_pipeline(
         return _refused(
             query, chosen, decision,
             standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
-            rerank_degraded=rerank_degraded,
+            rerank_degraded=rerank_degraded, rerank_score=rerank_score,
         )
 
     # 5. 首尾装配 + 编号
@@ -143,14 +145,14 @@ def run_pipeline(
             return _refused(
                 query, chosen, check,
                 standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
-                rerank_degraded=rerank_degraded,
+                rerank_degraded=rerank_degraded, rerank_score=rerank_score,
             )
 
     return RagResult(
         refused=False, raw_query=query, strategy=chosen,
         standard_query=rewrite.standard_query, evidence_text=evidence_text,
         citations=citations, items=assembled, rewrite_degraded=rewrite.degraded,
-        rerank_degraded=rerank_degraded,
+        rerank_degraded=rerank_degraded, rerank_score=rerank_score,
     )
 
 
@@ -220,7 +222,8 @@ def _self_check(
     from app.prompts.rag import SelfCheckOutput, self_check_messages
 
     try:
-        checker = model or build_structured_model(settings, SelfCheckOutput)
+        # 自评是拒答闸门，temperature=0：同一题同一证据必须给出同一个结论。
+        checker = model or build_structured_model(settings, SelfCheckOutput, temperature=0.0)
         output = checker.invoke(self_check_messages(raw_query, evidence_text))
     except Exception:
         logger.warning("生成前自评失败", exc_info=True)
