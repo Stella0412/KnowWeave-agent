@@ -7,6 +7,8 @@ from fastapi.responses import FileResponse
 from app.config import Settings, settings
 from app.db.base import Base
 from app.db.engine import engine
+from app.graph.build import build_graph
+from app.graph.runtime import open_checkpointer
 from app.routers import chat, extract, rag_eval
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -26,7 +28,13 @@ async def lifespan(app: FastAPI):
             await conn.run_sync(Base.metadata.create_all)
     except Exception as e:
         print(f"[警告] 数据库不可用，跳过建表: {e}")
-    yield
+
+    async with open_checkpointer(settings.langgraph_checkpoint_path) as saver:
+        app.state.graph = build_graph(
+            checkpointer=saver,
+            max_agent_steps=settings.max_agent_steps,
+        )
+        yield
 
 
 app = FastAPI(title="知序智能客服", lifespan=lifespan)
