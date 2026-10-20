@@ -16,11 +16,13 @@ logger = logging.getLogger(__name__)
 
 @tool
 async def query_order(order_id: str) -> str:
-    """查询订单信息。当用户询问订单状态、订单内容时调用。"""
+    """查询订单信息。当用户询问订单状态、订单内容时调用；返回值里的物流单号可继续用于 query_logistics。"""
     statuses = ["待付款", "已付款", "已发货", "已签收"]
+    tracking_no = f"SF{order_id}CN"
     return (
         f"订单 {order_id}：状态={random.choice(statuses)}，"
-        f"金额=¥{random.randint(20, 5000)}，商品=知序精选商品"
+        f"金额=¥{random.randint(20, 5000)}，商品=知序精选商品，"
+        f"物流单号={tracking_no}"
     )
 
 
@@ -34,12 +36,12 @@ async def query_product(product_name: str) -> str:
 
 
 @tool
-async def query_logistics(order_id: str) -> str:
-    """查询物流信息。当用户询问物流到哪了、什么时候送达时调用。"""
+async def query_logistics(tracking_no: str) -> str:
+    """查询物流信息。入参必须是 query_order 返回的物流单号（如 SF1001CN），不是订单号。"""
     carriers = ["中通", "圆通", "顺丰", "韵达"]
     nodes = ["已揽收", "运输中", "到达转运中心", "派送中"]
     return (
-        f"订单 {order_id} 物流：承运商={random.choice(carriers)}，"
+        f"物流单号 {tracking_no} 物流：承运商={random.choice(carriers)}，"
         f"当前节点={random.choice(nodes)}，预计3日内送达"
     )
 
@@ -98,17 +100,34 @@ async def _record_low_confidence(session_factory, turn: TurnContext | None, resu
         logger.warning("低置信度问题落池失败（不影响本轮回答）", exc_info=True)
 
 
-def build_create_ticket(session_factory, conversation_id: int) -> BaseTool:
+async def create_ticket_record(
+    session_factory,
+    conversation_id: int,
+    description: str,
+    ticket_type,
+    *,
+    escalate: bool = True,
+) -> str:
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        ticket_no = await repo.create_ticket(conversation_id, description, ticket_type)
+        if escalate:
+            await repo.set_conversation_status(conversation_id, ConversationStatus.ESCALATED)
+        await session.commit()
+    return ticket_no
+
+
+def build_create_ticket(
+    session_factory, conversation_id: int, *, escalate: bool = True
+) -> BaseTool:
     @tool
     async def create_ticket(
         description: str, ticket_type: Literal["售后", "投诉", "咨询"]
     ) -> str:
         """创建人工工单。当用户投诉、维权、或要求转人工等需要人工介入时调用。"""
-        async with session_factory() as session:
-            repo = ChatRepository(session)
-            ticket_no = await repo.create_ticket(conversation_id, description, ticket_type)
-            await repo.set_conversation_status(conversation_id, ConversationStatus.ESCALATED)
-            await session.commit()
+        ticket_no = await create_ticket_record(
+            session_factory, conversation_id, description, ticket_type, escalate=escalate
+        )
         return f"已为您创建工单，工单号 {ticket_no}，人工客服会尽快处理。"
 
     return create_ticket

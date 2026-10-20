@@ -69,7 +69,7 @@ async def test_tool_path_full_roundtrip(session_factory):
     decision = AIMessage(
         content="",
         tool_calls=[
-            {"name": "query_logistics", "args": {"order_id": "1001"},
+            {"name": "query_logistics", "args": {"tracking_no": "SF1001CN"},
              "id": "call_1", "type": "tool_call"}
         ],
     )

@@ -1,7 +1,14 @@
 import pytest
 
+from app.db.models import ConversationStatus
 from app.db.repository import ChatRepository
-from app.tools.business import build_create_ticket, build_query_faq, query_logistics, query_order
+from app.tools.business import (
+    build_create_ticket,
+    build_query_faq,
+    create_ticket_record,
+    query_logistics,
+    query_order,
+)
 from app.tools.registry import build_tools
 
 
@@ -9,13 +16,18 @@ from app.tools.registry import build_tools
 async def test_mock_tools_echo_input():
     out = await query_order.ainvoke({"order_id": "1001"})
     assert "1001" in out
-    out2 = await query_logistics.ainvoke({"order_id": "1001"})
-    assert "1001" in out2
+    assert "物流单号=SF1001CN" in out
+    out2 = await query_logistics.ainvoke({"tracking_no": "SF1001CN"})
+    assert "SF1001CN" in out2
+
+
+def test_query_logistics_schema_requires_tracking_no():
+    with pytest.raises(Exception):
+        query_logistics.args_schema.model_validate({"order_id": "1001"})
 
 
 @pytest.mark.asyncio
 async def test_query_faq_hit_and_miss(monkeypatch):
-    """v2：query_faq 内部改调 rag.pipeline，这里只 pin 工具层的出参契约。"""
     import app.tools.business as business
     from app.rag.pipeline import RagResult
 
@@ -35,7 +47,7 @@ async def test_query_faq_hit_and_miss(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_ticket_writes_and_escapes(session_factory):
+async def test_create_ticket_writes_and_escalates(session_factory):
     async with session_factory() as session:
         cid = await ChatRepository(session).create_conversation()
         await session.commit()
@@ -44,25 +56,42 @@ async def test_create_ticket_writes_and_escapes(session_factory):
     assert "工单" in out
     async with session_factory() as session:
         conv = await ChatRepository(session).get_conversation(cid)
-    assert conv.status.value == "已转人工"
+    assert conv.status is ConversationStatus.ESCALATED
 
 
 @pytest.mark.asyncio
-async def test_build_tools_returns_five_named_tools(session_factory):
+async def test_create_ticket_record_can_skip_escalation(session_factory):
+    async with session_factory() as session:
+        cid = await ChatRepository(session).create_conversation()
+        await session.commit()
+    ticket_no = await create_ticket_record(
+        session_factory, cid, "商品破损", "售后", escalate=False
+    )
+    assert ticket_no.startswith("T")
+    async with session_factory() as session:
+        conv = await ChatRepository(session).get_conversation(cid)
+    assert conv.status is ConversationStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_build_tools_default_has_five_tools(session_factory):
     tools = build_tools(session_factory, 1)
     assert [t.name for t in tools] == [
         "query_order", "query_product", "query_logistics", "query_faq", "create_ticket",
     ]
 
 
+@pytest.mark.asyncio
+async def test_build_tools_can_exclude_faq(session_factory):
+    tools = build_tools(session_factory, 1, include_faq=False)
+    names = [t.name for t in tools]
+    assert names == ["query_order", "query_product", "query_logistics", "create_ticket"]
+
+
 def test_tool_timeout_gives_query_faq_a_longer_budget(monkeypatch):
-    """断言里不许出现 `settings` 对象：它失败时 pytest 会打出 `Settings(...)` 的 repr，
-    而 app/config.py 的 *_api_key 是裸 str、没有掩码 repr → 真实密钥进控制台（评审实测过）。
-    改成 monkeypatch 一个普通数字：失败时打印的是两个 float，同时比原写法更有鉴别力 ——
-    「写死 30.0」或「无条件返回 default」的实现都过不了。"""
     from app.config import settings
     from app.tools.registry import tool_timeout
 
     monkeypatch.setattr(settings, "rag_tool_timeout", 7.5)
-    assert tool_timeout("query_faq", 5.0) == 7.5      # 只有真读了 settings 才成立
-    assert tool_timeout("query_order", 5.0) == 5.0    # 其余工具仍拿全局默认，不跟着变松
+    assert tool_timeout("query_faq", 5.0) == 7.5
+    assert tool_timeout("query_order", 5.0) == 5.0

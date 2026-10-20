@@ -20,12 +20,14 @@ def tool_timeout(name: str, default: float) -> float:
 
 
 def build_tools(
-    session_factory, conversation_id: int, turn: TurnContext | None = None
+    session_factory,
+    conversation_id: int,
+    turn: TurnContext | None = None,
+    *,
+    include_faq: bool = True,
 ) -> list[BaseTool]:
-    return [
-        query_order,
-        query_product,
-        query_logistics,
-        build_query_faq(session_factory, turn),
-        build_create_ticket(session_factory, conversation_id),
-    ]
+    tools = [query_order, query_product, query_logistics]
+    if include_faq:
+        tools.append(build_query_faq(session_factory, turn))
+    tools.append(build_create_ticket(session_factory, conversation_id))
+    return tools
