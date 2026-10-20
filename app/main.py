@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,6 +13,14 @@ from app.graph.runtime import open_checkpointer
 from app.routers import chat, extract, rag_eval
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+# uvicorn 只配置自己的 logger，应用日志默认被根 logger 的 WARNING 挡住；
+# 编排 trace 是 ch05 的验收口径（forced_rag / tools / stop_reason），必须能看到。
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logging.getLogger("knowweave.turn").setLevel(logging.INFO)
 
 
 def validate_config(s: Settings | None = None) -> None:
