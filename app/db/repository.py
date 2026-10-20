@@ -53,16 +53,17 @@ class ChatRepository:
         content: str | None = None,
         tool_calls: list | None = None,
         tool_call_id: str | None = None,
-    ) -> None:
-        self._session.add(
-            Message(
-                conversation_id=conversation_id,
-                role=role,
-                content=content,
-                tool_calls=tool_calls,
-                tool_call_id=tool_call_id,
-            )
+    ) -> Message:
+        row = Message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
         )
+        self._session.add(row)
+        await self._session.flush()
+        return row
 
     async def list_messages(self, conversation_id: int) -> list[Message]:
         result = await self._session.execute(

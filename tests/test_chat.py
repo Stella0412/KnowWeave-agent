@@ -1,9 +1,12 @@
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from fastapi import FastAPI
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.db.models import Conversation
+from app.db.repository import ChatRepository
 from app.routers import chat as chat_module
 from app.services.chat_service import ChatService
 
@@ -13,138 +16,233 @@ class FakeChunk:
         self.content = content
 
 
-class FakeBound:
-    def __init__(self, message):
-        self._message = message
-
-    async def ainvoke(self, messages):
-        return self._message
+class FakeSnapshot:
+    def __init__(self, values):
+        self.values = values
 
 
-class FakeModel:
-    def __init__(self, decision=None, chunks=()):
-        self._decision = decision or AIMessage(content="直接回答")
-        self._chunks = chunks or []
+class FakeGraph:
+    def __init__(self, events, final_state, existing=None):
+        self._events = events
+        self._final_state = final_state
+        self._existing = existing or []
+        self.inputs = []
 
-    def bind_tools(self, tools):
-        return FakeBound(self._decision)
+    async def aget_state(self, config):
+        # 首次调用发生在 _prepare（看 checkpoint 是否为空）；
+        # 流结束后再调用时返回最终状态，供 ChatService 落库和发 citations/actions。
+        if self.inputs:
+            return FakeSnapshot(self._final_state)
+        return FakeSnapshot({"messages": list(self._existing)})
 
-    def astream(self, messages):
-        async def gen():
-            for c in self._chunks:
-                yield FakeChunk(c)
-        return gen()
+    async def astream(self, input, config, context, stream_mode):
+        self.inputs.append(input)
+        for event in self._events:
+            yield event
+
+    async def ainvoke(self, input, config, context):
+        self.inputs.append(input)
+        return self._final_state
 
 
-async def _collect(svc, session_id, message):
+async def _collect(service, session_id, message):
     events = []
-    async for e in svc.stream(session_id, message):
-        events.append(e)
+    async for event in service.stream(session_id, message):
+        events.append(event)
     return events
+
+
+def _service(graph, session_factory, intent_model=None):
+    return ChatService(
+        model=object(),
+        intent_model=intent_model or object(),
+        session_factory=session_factory,
+        graph=graph,
+    )
 
 
 @pytest.mark.asyncio
 async def test_new_session_emits_session_and_persists(session_factory):
-    svc = ChatService(FakeModel(), session_factory)
-    events = await _collect(svc, None, "你好")
+    final = {
+        "messages": [
+            HumanMessage(content="你好", id="db:1"),
+            AIMessage(content="您好"),
+        ],
+        "citations": [],
+        "suggested_actions": [],
+        "answer": "您好",
+    }
+    graph = FakeGraph([
+        ("messages", (FakeChunk("您"), {"langgraph_node": "agent_llm"})),
+        ("messages", (FakeChunk("好"), {"langgraph_node": "agent_llm"})),
+    ], final)
+    events = await _collect(_service(graph, session_factory), None, "你好")
     assert events[0]["type"] == "session"
     assert events[-1]["type"] == "done"
     cid = int(events[0]["session_id"])
     async with session_factory() as session:
-        conv = await session.get(Conversation, cid)
-    assert conv is not None
+        rows = await ChatRepository(session).list_messages(cid)
+    assert [r.role.value for r in rows] == ["user", "assistant"]
+    assert rows[1].content == "您好"
 
 
 @pytest.mark.asyncio
-async def test_no_tool_path_streams_and_persists(session_factory):
-    svc = ChatService(FakeModel(chunks=["您", "好"]), session_factory)
-    events = await _collect(svc, None, "你好")
+async def test_filters_classify_intent_tokens(session_factory):
+    final = {"messages": [HumanMessage(content="你好", id="db:1"), AIMessage(content="好")]}
+    graph = FakeGraph([
+        ("messages", (FakeChunk("错误"), {"langgraph_node": "classify_intent"})),
+        ("messages", (FakeChunk("好"), {"langgraph_node": "agent_llm"})),
+    ], final)
+    events = await _collect(_service(graph, session_factory), None, "你好")
     tokens = "".join(e["content"] for e in events if e["type"] == "token")
-    assert tokens == "您好"
-    assert "citations" not in [e["type"] for e in events]
+    assert tokens == "好"
 
 
 @pytest.mark.asyncio
-async def test_tool_path_full_roundtrip(session_factory):
-    decision = AIMessage(
-        content="",
-        tool_calls=[
-            {"name": "query_logistics", "args": {"tracking_no": "SF1001CN"},
-             "id": "call_1", "type": "tool_call"}
+async def test_fixed_reply_streams_from_updates(session_factory):
+    final = {"messages": [HumanMessage(content="你好", id="db:1"), AIMessage(content="您好呀")]}
+    graph = FakeGraph([
+        ("updates", {"chitchat_reply": {"answer": "您好呀"}}),
+    ], final)
+    events = await _collect(_service(graph, session_factory), None, "你好")
+    assert [e["content"] for e in events if e["type"] == "token"] == ["您好呀"]
+
+
+@pytest.mark.asyncio
+async def test_tool_status_comes_from_agent_update(session_factory):
+    tool_call = {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
+    final = {
+        "messages": [
+            HumanMessage(content="订单", id="db:1"),
+            AIMessage(content="", tool_calls=[tool_call]),
+            ToolMessage(content="订单信息", tool_call_id="c1"),
+            AIMessage(content="答"),
         ],
-    )
-    svc = ChatService(FakeModel(decision=decision, chunks=["您的", "包裹"]), session_factory)
-    events = await _collect(svc, None, "订单1001到哪了")
+        "citations": [],
+        "suggested_actions": [],
+        "answer": "答",
+    }
+    graph = FakeGraph([
+        ("updates", {"agent_llm": {"messages": [AIMessage(content="", tool_calls=[tool_call])]}}),
+    ], final)
+    events = await _collect(_service(graph, session_factory), None, "订单")
+    status = [e for e in events if e["type"] == "tool_status"]
+    assert status == [{"type": "tool_status", "name": "query_order", "status": "running"}]
+
+
+@pytest.mark.asyncio
+async def test_citations_and_actions_before_done(session_factory):
+    final = {
+        "messages": [HumanMessage(content="投诉", id="db:1"), AIMessage(content="抱歉")],
+        "citations": [{"n": 1, "chunk_id": 7}],
+        "suggested_actions": [{"type": "transfer_human", "label": "转人工"}],
+        "answer": "抱歉",
+    }
+    graph = FakeGraph([
+        ("updates", {"complaint_reply": {"answer": "抱歉"}}),
+    ], final)
+    events = await _collect(_service(graph, session_factory), None, "投诉")
     types = [e["type"] for e in events]
-    assert "tool_status" in types
-    ts = next(e for e in events if e["type"] == "tool_status")
-    assert ts["name"] == "query_logistics"
-    # 落库：user / assistant(tool_calls) / tool / assistant(全文) 四类齐全
+    assert types.index("citations") < types.index("actions") < types.index("done")
+
+
+@pytest.mark.asyncio
+async def test_persists_tool_trace(session_factory):
+    call = {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
+    final = {
+        "messages": [
+            HumanMessage(content="订单", id="db:1"),
+            AIMessage(content="", tool_calls=[call]),
+            ToolMessage(content="订单信息", tool_call_id="c1"),
+            AIMessage(content="答"),
+        ],
+        "citations": [],
+        "suggested_actions": [],
+        "answer": "答",
+    }
+    graph = FakeGraph([], final)
+    events = await _collect(_service(graph, session_factory), None, "订单")
     cid = int(events[0]["session_id"])
     async with session_factory() as session:
-        from app.db.repository import ChatRepository
         rows = await ChatRepository(session).list_messages(cid)
-    roles = [r.role.value for r in rows]
-    assert roles == ["user", "assistant", "tool", "assistant"]
-    assert rows[1].tool_calls[0]["name"] == "query_logistics"
-    assert rows[2].tool_call_id == "call_1"
+    assert [r.role.value for r in rows] == ["user", "assistant", "tool", "assistant"]
+    assert rows[1].tool_calls[0]["name"] == "query_order"
+    assert rows[2].tool_call_id == "c1"
 
 
 @pytest.mark.asyncio
-async def test_db_unavailable_emits_error(session_factory):
-    class BoomFactory:
-        def __call__(self):
-            raise RuntimeError("db down")
+async def test_seeds_mysql_history_when_checkpoint_empty(session_factory):
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        cid = await repo.create_conversation()
+        await repo.add_message(cid, role="user", content="旧问题")
+        await repo.add_message(cid, role="assistant", content="旧回答")
+        await session.commit()
 
-    svc = ChatService(FakeModel(chunks=["x"]), BoomFactory())
-    events = await _collect(svc, "1", "你好")
+    final = {
+        "messages": [
+            HumanMessage(content="旧问题", id="db:1"),
+            AIMessage(content="旧回答", id="db:2"),
+            HumanMessage(content="新问题", id="db:3"),
+            AIMessage(content="新回答"),
+        ]
+    }
+    graph = FakeGraph([], final, existing=[])
+    await _collect(_service(graph, session_factory), str(cid), "新问题")
+    sent = graph.inputs[0]["messages"]
+    assert [m.content for m in sent] == ["旧问题", "旧回答", "新问题"]
+
+
+@pytest.mark.asyncio
+async def test_second_turn_does_not_reseed_when_checkpoint_has_messages(session_factory):
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        cid = await repo.create_conversation()
+        await repo.add_message(cid, role="user", content="旧问题")
+        await repo.add_message(cid, role="assistant", content="旧回答")
+        await session.commit()
+
+    existing = [HumanMessage(content="旧问题", id="db:1"), AIMessage(content="旧回答")]
+    final = {"messages": existing + [HumanMessage(content="新问题", id="db:3"), AIMessage(content="新回答")]}
+    graph = FakeGraph([], final, existing=existing)
+    await _collect(_service(graph, session_factory), str(cid), "新问题")
+    sent = graph.inputs[0]["messages"]
+    assert [m.content for m in sent] == ["新问题"]
+
+
+@pytest.mark.asyncio
+async def test_graph_error_emits_error(session_factory):
+    class BoomGraph(FakeGraph):
+        async def astream(self, input, config, context, stream_mode):
+            raise RuntimeError("graph down")
+            yield  # pragma: no cover
+
+    events = await _collect(_service(BoomGraph([], {}), session_factory), None, "你好")
     assert events[-1]["type"] == "error"
+    assert "graph down" in events[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_returns_eval_payload(session_factory):
+    final = {
+        "messages": [HumanMessage(content="你好", id="db:1"), AIMessage(content="您好")],
+        "answer": "您好",
+        "intent": "chitchat",
+        "route": "chitchat",
+        "suggested_actions": [],
+        "trace": {"forced_rag": False},
+    }
+    graph = FakeGraph([], final)
+    payload = await _service(graph, session_factory).run(None, "你好")
+    assert payload["answer"] == "您好"
+    assert payload["intent"] == "chitchat"
+    assert payload["session_id"] > 0
 
 
 async def test_chat_router_empty_message_422():
     app = FastAPI()
     app.include_router(chat_module.router)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        r = await c.post("/chat", json={"message": ""})
-    assert r.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_tool_path_pushes_citations_before_done(session_factory, monkeypatch):
-    """验收③ 依赖这条 SSE 契约：引用载荷必须在 done 之前到达，前端才来得及挂角标。
-
-    这条同时钉住两件事：build_tools 真的收到了第三个实参（TurnContext），
-    以及 ChatService 把 turn.citations 推成了 citations 事件。
-    """
-    import app.services.chat_service as chat_service
-    from langchain_core.tools import tool
-
-    captured = {}
-
-    @tool
-    async def query_probe(keyword: str) -> str:
-        """探测工具：把一条引用写进本轮的侧信道。"""
-        captured["turn"].citations.append({"n": 1, "chunk_id": 7, "answer": "满 99 元包邮"})
-        return "命中"
-
-    def fake_build_tools(session_factory, conversation_id, turn=None):
-        captured["turn"] = turn
-        return [query_probe]
-
-    monkeypatch.setattr(chat_service, "build_tools", fake_build_tools)
-
-    decision = AIMessage(content="", tool_calls=[
-        {"name": "query_probe", "args": {"keyword": "邮费"}, "id": "call_1", "type": "tool_call"}
-    ])
-    svc = ChatService(FakeModel(decision=decision, chunks=["好的"]), session_factory)
-    events = await _collect(svc, None, "邮费多少")
-    types = [e["type"] for e in events]
-
-    assert "citations" in types
-    assert types.index("citations") < types.index("done")   # 顺序，不是只要出现过
-    assert types[-1] == "done"
-    payload = next(e for e in events if e["type"] == "citations")
-    assert payload["items"][0]["chunk_id"] == 7
-    # 侧信道里必须是用户原话（DDL 的语义 + T13 的落池规则都建立在这上面）
-    assert captured["turn"].raw_question == "邮费多少"
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/chat", json={"message": ""})
+    assert response.status_code == 422
