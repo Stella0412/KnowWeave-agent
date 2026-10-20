@@ -18,3 +18,9 @@ ROUTE_BY_INTENT = {
 
 def route_by_intent(state) -> str:
     return state["route"]
+
+
+def gate_router(state) -> str:
+    if state.get("retrieval_error"):
+        return "fallback"
+    return "agent" if state.get("evidence_strong") else "fallback"
