@@ -12,8 +12,16 @@ from app.graph.nodes import (
     fallback_reply,
     forced_rag,
     log_turn,
+    refund_expand,
+    refund_fetch_order,
+    refund_retrieve,
 )
-from app.graph.routing import gate_router, make_should_continue, route_by_intent
+from app.graph.routing import (
+    gate_router,
+    make_should_continue,
+    refund_order_router,
+    route_by_intent,
+)
 from app.graph.state import ConversationState, GraphContext
 
 
@@ -24,6 +32,9 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("forced_rag", forced_rag)
     graph.add_node("confidence_check", confidence_check)
+    graph.add_node("refund_fetch_order", refund_fetch_order)
+    graph.add_node("refund_expand", refund_expand)
+    graph.add_node("refund_retrieve", refund_retrieve)
     graph.add_node("agent_llm", agent_llm)
     graph.add_node("agent_tools", agent_tools)
     graph.add_node("fallback_reply", fallback_reply)
@@ -42,7 +53,7 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
             "complaint": "complaint_reply",
             "chitchat": "chitchat_reply",
             "clarify": "agent_llm",
-            "refund_flow": "agent_llm",
+            "refund_flow": "refund_fetch_order",
         },
     )
     graph.add_edge("forced_rag", "confidence_check")
@@ -51,6 +62,13 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
         gate_router,
         {"agent": "agent_llm", "fallback": "fallback_reply"},
     )
+    graph.add_conditional_edges(
+        "refund_fetch_order",
+        refund_order_router,
+        {"expand": "refund_expand", "fallback": "fallback_reply"},
+    )
+    graph.add_edge("refund_expand", "refund_retrieve")
+    graph.add_edge("refund_retrieve", "confidence_check")
     graph.add_conditional_edges(
         "agent_llm",
         make_should_continue(max_agent_steps),

@@ -31,6 +31,15 @@ class ConversationState(TypedDict, total=False):
     refusal_source: str | None
     refusal_reason: str | None
 
+    order_no: str | None
+    order_data: dict | None
+    order_error: str | None
+    policy_queries: list[str]
+    expand_degraded: bool | None
+    policy_refused: bool | None
+    refund_offered: bool | None
+    flow_steps: list[str]
+
     answer: str | None
     steps: int
     turn_msg_offset: int

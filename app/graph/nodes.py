@@ -3,23 +3,28 @@
 import asyncio
 import json
 import logging
+import re
 import time
+from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import interrupt
 
-from app.db.repository import LowConfidenceRepository
+from app.db.repository import LowConfidenceRepository, OrderRepository
 from app.graph.routing import ROUTE_BY_INTENT
 from app.prompts.orchestrator import (
     AGENT_STOPPED_REPLY,
     CHITCHAT_REPLY,
     COMPLAINT_REPLY,
     KNOWLEDGE_UNAVAILABLE_REPLY,
+    NO_ORDERS_REPLY,
+    ORDER_NOT_FOUND_REPLY,
     CorefOutput,
     coref_messages,
     expansion_messages,
     intent_messages,
 )
-from app.rag.pipeline import run_pipeline
+from app.rag.pipeline import run_expanded_pipeline, run_pipeline
 from app.rag.refusal import SOURCE_RETRIEVAL, pool_record, refusal_text
 
 logger = logging.getLogger("knowweave.turn")
@@ -132,8 +137,147 @@ async def refund_expand(state, runtime):
     }
 
 
+def _iso(value) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _order_picker_item(order) -> dict:
+    return {
+        "order_no": order.order_no,
+        "product_name": order.product_name,
+        "status": order.status,
+        "amount": order.amount,
+        "signed_at": _iso(order.signed_at),
+    }
+
+
+def _order_data(order) -> dict:
+    return {
+        **_order_picker_item(order),
+        "product_type": order.product_type,
+        "tracking_no": order.tracking_no,
+        "paid_at": _iso(order.paid_at),
+    }
+
+
+def _order_numbers(text: str, allowed: set[str]) -> list[str]:
+    found = []
+    for match in re.findall(r"(?<!\d)(\d{4,8})(?!\d)", text or ""):
+        if match in allowed and match not in found:
+            found.append(match)
+    return found
+
+
+async def refund_fetch_order(state, runtime):
+    trace = dict(state.get("trace") or {})
+    steps = list(state.get("flow_steps") or [])
+    async with runtime.context.session_factory() as session:
+        orders = await OrderRepository(session).list_for_user(
+            state.get("user_id") or "anonymous"
+        )
+    if not orders:
+        trace["order_error"] = "empty"
+        return {
+            "order_error": "empty",
+            "fallback_reason": "order_unavailable",
+            "stop_reason": "order_unavailable",
+            "flow_steps": steps,
+            "trace": trace,
+        }
+
+    allowed = {order.order_no for order in orders}
+    texts = [state.get("resolved_query") or _last_user_text(state.get("messages", []))]
+    texts.extend(
+        message.content
+        for message in state.get("messages", [])
+        if isinstance(message, HumanMessage) and isinstance(message.content, str)
+    )
+    order_no = next(
+        (no for text in texts for no in _order_numbers(text, allowed)), None
+    )
+    if order_no is None:
+        choice = interrupt(
+            {
+                "kind": "select_order",
+                "prompt": (
+                    "请选择要退款的订单"
+                    if state.get("intent") == "refund_return"
+                    else "请选择要处理的订单"
+                ),
+                "orders": [_order_picker_item(order) for order in orders],
+            }
+        )
+        order_no = str((choice or {}).get("order_no") or "").strip()
+
+    async with runtime.context.session_factory() as session:
+        order = await OrderRepository(session).get(order_no)
+    if order is None:
+        trace["order_error"] = "not_found"
+        return {
+            "order_error": "not_found",
+            "fallback_reason": "order_unavailable",
+            "stop_reason": "order_unavailable",
+            "flow_steps": steps,
+            "trace": trace,
+        }
+
+    steps.append("fetch_order")
+    return {
+        "order_no": order.order_no,
+        "order_data": _order_data(order),
+        "order_error": None,
+        "flow_steps": steps,
+        "trace": trace,
+    }
+
+
+async def refund_retrieve(state, runtime):
+    trace = dict(state.get("trace") or {})
+    steps = list(state.get("flow_steps") or [])
+    query = state.get("resolved_query") or _last_user_text(state.get("messages", []))
+    queries = list(state.get("policy_queries") or [query])
+    trace["policy_queries"] = queries
+    try:
+        result = await asyncio.to_thread(
+            run_expanded_pipeline,
+            queries,
+            query,
+            source_files=runtime.context.turn.source_files or None,
+        )
+    except Exception as exc:
+        logger.warning("政策检索失败", exc_info=True)
+        trace["retrieval_error"] = str(exc)
+        return {
+            "evidence": "",
+            "citations": [],
+            "evidence_strong": False,
+            "retrieval_error": str(exc),
+            "refusal_source": None,
+            "refusal_reason": None,
+            "policy_refused": None,
+            "flow_steps": steps,
+            "trace": trace,
+        }
+
+    strong = (not result.refused) and bool(result.evidence_text)
+    trace["policy_refused"] = result.refused
+    trace["rerank_score"] = result.rerank_score
+    steps.append("retrieve")
+    return {
+        "evidence": result.evidence_text,
+        "citations": result.citations,
+        "evidence_strong": strong,
+        "retrieval_error": None,
+        "refusal_source": result.refusal_source,
+        "refusal_reason": result.refusal_reason,
+        "policy_refused": result.refused,
+        "flow_steps": steps,
+        "trace": trace,
+    }
+
+
 async def forced_rag(state, runtime):
-    question = _last_user_text(state.get("messages", []))
+    question = state.get("resolved_query") or _last_user_text(state.get("messages", []))
     trace = dict(state.get("trace") or {})
     trace["forced_rag"] = True
     try:
@@ -215,6 +359,9 @@ async def fallback_reply(state, runtime):
     elif reason == "agent_stopped":
         text = AGENT_STOPPED_REPLY
         stop_reason = "max_steps"
+    elif reason == "order_unavailable":
+        text = NO_ORDERS_REPLY if state.get("order_error") == "empty" else ORDER_NOT_FOUND_REPLY
+        stop_reason = "order_unavailable"
     else:
         text = refusal_text(question)
         stop_reason = state.get("stop_reason") or "gate_refused"
@@ -298,6 +445,17 @@ async def log_turn(state, runtime):
         "tokens_used": state.get("tokens_used", 0),
         "stop_reason": state.get("stop_reason"),
         "fallback_reason": state.get("fallback_reason"),
+        "resolved_query": state.get("resolved_query"),
+        "coref_source": state.get("coref_source"),
+        "intent_confidence": state.get("intent_confidence"),
+        "intent_mode": getattr(runtime.context, "intent_mode", "accuracy"),
+        "order_no": state.get("order_no"),
+        "order_error": state.get("order_error"),
+        "policy_queries": state.get("policy_queries") or [],
+        "expand_degraded": state.get("expand_degraded"),
+        "policy_refused": state.get("policy_refused"),
+        "refund_offered": state.get("refund_offered"),
+        "flow_steps": state.get("flow_steps") or [],
         "actions": [a.get("type") for a in state.get("suggested_actions", [])],
         "tools": trace["tools"],
         "latency_ms": trace["latency_ms"],

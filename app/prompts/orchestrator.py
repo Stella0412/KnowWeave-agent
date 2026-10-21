@@ -139,6 +139,9 @@ AGENT_STOPPED_REPLY = (
     "抱歉，这个问题我暂时没能完整处理，建议您联系人工客服进一步核实。"
 )
 
+NO_ORDERS_REPLY = "暂无可查询的订单，请转人工协助处理。"
+ORDER_NOT_FOUND_REPLY = "未找到该订单，请核对订单号后重试。"
+
 AGENT_SYSTEM_ADDENDUM_KNOWLEDGE = """【本轮是知识类问题】
 - 下面已经给出本轮强制检索到的证据；不要再调用 query_faq。
 - 只依据证据回答，引用编号沿用 [n] 规则；证据没有的数字、条件、时限不要补。

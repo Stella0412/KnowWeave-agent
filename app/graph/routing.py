@@ -27,6 +27,10 @@ def gate_router(state) -> str:
     return "agent" if state.get("evidence_strong") else "fallback"
 
 
+def refund_order_router(state) -> str:
+    return "fallback" if state.get("order_error") else "expand"
+
+
 def make_should_continue(max_steps: int):
     def should_continue(state) -> str:
         messages = state.get("messages") or []
