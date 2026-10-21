@@ -247,6 +247,18 @@
   }
   .ticket-modal .modal-actions button:disabled { opacity: .5; cursor: not-allowed; }
 
+  .order-cards { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .order-prompt { font-size: 13px; color: #666; }
+  .order-card {
+    display: flex; flex-direction: column; gap: 3px; text-align: left;
+    padding: 10px 12px; border: 1px solid #e4ddd2; border-radius: 10px;
+    background: #fff; cursor: pointer;
+  }
+  .order-card:hover { border-color: var(--brand-2); }
+  .order-card:disabled { opacity: .55; cursor: not-allowed; }
+  .order-card strong { font-size: 14px; }
+  .order-card span { font-size: 12px; color: #777; }
+
   .bubble .error { color: #d93a3a; margin-top: 6px; }
 
   /* 流式光标 */
@@ -584,6 +596,7 @@
   function reset() {
     sessionId = null;
     closeTicketModal();
+    closeRefundModal();
     chatEl.innerHTML = '';
     addAssistantMessage('您好，我是知序客服知序～有什么可以帮您的吗？订单、物流、售后问题都可以问我哦。');
   }
@@ -869,11 +882,149 @@
     });
   }
 
+  let refundModal = null;
+
+  function closeRefundModal() {
+    if (refundModal) {
+      if (refundModal._onKey) document.removeEventListener('keydown', refundModal._onKey);
+      refundModal.remove();
+      refundModal = null;
+    }
+  }
+
+  function openRefundModal(button, item) {
+    closeRefundModal();
+    const draft = item.draft || {};
+    const options = (draft.reason_options || []).map(
+      (r) => '<option value="' + r + '">' + r + '</option>'
+    ).join('');
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    const modal = document.createElement('div');
+    modal.className = 'ticket-modal';
+    modal.innerHTML = `
+      <h3>提交退款单</h3>
+      <label>订单号<input id="refundOrder" value="${draft.order_no || ''}" readonly></label>
+      <label>退款原因
+        <select id="refundReason"><option value="">请选择</option>${options}</select>
+      </label>
+      <label>备注（可选）
+        <textarea id="refundNote" rows="3" placeholder="补充说明"></textarea>
+      </label>
+      <div class="modal-error" id="refundError"></div>
+      <div class="modal-actions">
+        <button type="button" id="refundCancel">取消</button>
+        <button type="button" id="refundSubmit">提交</button>
+      </div>`;
+    mask.appendChild(modal);
+    document.body.appendChild(mask);
+    refundModal = mask;
+    const close = () => closeRefundModal();
+    modal.querySelector('#refundCancel').addEventListener('click', close);
+    mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    mask._onKey = onKey;
+    modal.querySelector('#refundSubmit').addEventListener('click', async () => {
+      const reason = modal.querySelector('#refundReason').value;
+      const note = modal.querySelector('#refundNote').value.trim();
+      const errorEl = modal.querySelector('#refundError');
+      errorEl.textContent = '';
+      if (!reason) { errorEl.textContent = '请选择退款原因'; return; }
+      const submit = modal.querySelector('#refundSubmit');
+      submit.disabled = true;
+      try {
+        const resp = await fetch('/chat/refund', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId, order_no: draft.order_no,
+            reason_category: reason, note: note || null,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+        close();
+        button.disabled = true;
+        const notice = document.createElement('div');
+        notice.className = 'system-notice';
+        notice.textContent = '退款单已提交 ' + data.refund_no;
+        chatEl.appendChild(notice);
+        scrollToBottom();
+      } catch (e) {
+        errorEl.textContent = '提交失败：' + e.message;
+        submit.disabled = false;
+      }
+    });
+  }
+
+  function renderOrderCards(bubbleEl, item) {
+    const box = document.createElement('div');
+    box.className = 'order-cards';
+    const prompt = document.createElement('div');
+    prompt.className = 'order-prompt';
+    prompt.textContent = item.prompt || '请选择订单';
+    box.appendChild(prompt);
+    for (const order of item.orders || []) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'order-card';
+      const title = document.createElement('strong');
+      title.textContent = '订单 ' + order.order_no;
+      const meta = document.createElement('span');
+      meta.textContent = order.product_name + ' · ' + order.status;
+      const amount = document.createElement('span');
+      amount.textContent = '¥' + order.amount +
+        (order.signed_at ? ' · 签收 ' + String(order.signed_at).slice(0, 10) : '');
+      card.append(title, meta, amount);
+      card.addEventListener('click', () => resumeWithOrder(box, order));
+      box.appendChild(card);
+    }
+    bubbleEl.appendChild(box);
+    scrollToBottom();
+  }
+
+  async function resumeWithOrder(box, order) {
+    box.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    const notice = document.createElement('div');
+    notice.className = 'system-notice';
+    notice.textContent = '已选择订单 ' + order.order_no;
+    chatEl.appendChild(notice);
+    const { bubble } = addAssistantMessage('');
+    const stream = document.createElement('span');
+    stream.className = 'stream';
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    bubble.innerHTML = '';
+    bubble.appendChild(stream);
+    bubble.appendChild(cursor);
+    const ctx = { raw: '', stream, finished: false, citations: [], actions: [] };
+    setSending(true);
+    try {
+      const resp = await fetch('/chat/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, order_no: order.order_no }),
+      });
+      await consumeStream(resp, bubble, ctx);
+    } catch (e) {
+      box.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      finalizeAssistant(bubble, ctx);
+      appendError(bubble, e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
   function renderActions(bubbleEl, items) {
     if (!items || !items.length) return;
     const bar = document.createElement('div');
     bar.className = 'action-bar';
     for (const item of items) {
+      if (item.type === 'select_order') {
+        renderOrderCards(bubbleEl, item);
+        return;
+      }
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'action-btn';
@@ -882,10 +1033,13 @@
         button.addEventListener('click', () => transferHuman(button));
       } else if (item.type === 'create_ticket') {
         button.addEventListener('click', () => openTicketModal(button));
+      } else if (item.type === 'refund_form') {
+        button.textContent = item.label || '提交退款单';
+        button.addEventListener('click', () => openRefundModal(button, item));
       }
       bar.appendChild(button);
     }
-    bubbleEl.appendChild(bar);
+    if (bar.childElementCount) bubbleEl.appendChild(bar);
   }
 
   function appendError(bubbleEl, message) {
@@ -894,6 +1048,30 @@
     err.textContent = '[出错了] ' + message;
     bubbleEl.appendChild(err);
     scrollToBottom();
+  }
+
+  async function consumeStream(resp, bubble, ctx) {
+    if (!resp.ok || !resp.body) {
+      throw new Error('请求失败（HTTP ' + resp.status + '）');
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    const flush = () => {
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) handleLine(line, bubble, ctx);
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      flush();
+    }
+    buf += decoder.decode();
+    flush();
+    if (buf.trim()) handleLine(buf.trim(), bubble, ctx);
+    if (!ctx.finished) finalizeAssistant(bubble, ctx);
   }
 
   async function send() {
@@ -922,29 +1100,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, message: text }),
       });
-      if (!resp.ok || !resp.body) {
-        throw new Error('请求失败（HTTP ' + resp.status + '）');
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buf = '';
-      const flush = () => {
-        const lines = buf.split('\n');
-        buf = lines.pop() ?? '';
-        for (const line of lines) handleLine(line, bubble, ctx);
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        flush();
-      }
-      buf += decoder.decode(); // 冲刷解码器残留
-      flush();
-      if (buf.trim()) handleLine(buf.trim(), bubble, ctx); // 无换行结尾的最后一行
-      if (!ctx.finished) finalizeAssistant(bubble, ctx);   // 确保收尾
+      await consumeStream(resp, bubble, ctx);
     } catch (e) {
       finalizeAssistant(bubble, ctx);
       appendError(bubble, e.message);
