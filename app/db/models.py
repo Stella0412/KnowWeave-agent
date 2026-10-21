@@ -106,6 +106,47 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class RefundStatus(str, enum.Enum):
+    PENDING = "待审核"
+    APPROVED = "已通过"
+    REJECTED = "已拒绝"
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    order_no: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="anonymous")
+    product_name: Mapped[str] = mapped_column(String(255))
+    product_type: Mapped[str] = mapped_column(String(32), default="普通")
+    amount: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16))
+    tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RefundRequest(Base):
+    __tablename__ = "refund_requests"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    refund_no: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    conversation_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("conversations.id"), index=True
+    )
+    order_no: Mapped[str] = mapped_column(
+        String(32), ForeignKey("orders.order_no"), index=True
+    )
+    reason_category: Mapped[str] = mapped_column(String(32))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[RefundStatus] = mapped_column(
+        Enum(RefundStatus, values_callable=lambda e: [m.value for m in e]),
+        default=RefundStatus.PENDING,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class VectorizeStatus(str, enum.Enum):
     PENDING = "pending"
     DONE = "done"

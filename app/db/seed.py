@@ -1,10 +1,11 @@
 import asyncio
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
 from app.db.base import Base
 from app.db.engine import engine
-from app.db.models import FAQ, Conversation, Message, MessageRole
+from app.db.models import FAQ, Conversation, Message, MessageRole, Order
 
 FAQ_ROWS = [
     ("退货政策是什么", "支持7天无理由退货，商品不影响二次销售即可申请。", "售后"),
@@ -74,6 +75,41 @@ async def seed_conversations(session_factory) -> None:
         await session.commit()
 
 
+ORDER_SEED = [
+    # order_no, product, type, amount, status, tracking, signed_days_ago
+    ("1001", "猫爬架", "普通", 299, "已签收", "SF1001CN", 3),
+    ("1002", "定制猫窝", "定制", 499, "已签收", "SF1002CN", 10),
+    ("1003", "猫粮", "普通", 129, "已发货", "SF1003CN", None),
+    ("1004", "猫砂", "普通", 59, "已取消", None, None),
+    ("1005", "猫罐头", "生鲜", 89, "已签收", "SF1005CN", 2),
+]
+
+
+async def seed_orders(session_factory) -> None:
+    async with session_factory() as session:
+        count = (await session.execute(select(func.count()).select_from(Order))).scalar()
+        if count:
+            return
+        now = datetime.now()
+        for order_no, name, ptype, amount, status, tracking, signed_days in ORDER_SEED:
+            signed_at = now - timedelta(days=signed_days) if signed_days is not None else None
+            paid_at = now - timedelta(days=(signed_days or 1) + 1)
+            session.add(
+                Order(
+                    order_no=order_no,
+                    user_id="anonymous",
+                    product_name=name,
+                    product_type=ptype,
+                    amount=amount,
+                    status=status,
+                    tracking_no=tracking,
+                    paid_at=paid_at,
+                    signed_at=signed_at,
+                )
+            )
+        await session.commit()
+
+
 async def main() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -81,7 +117,8 @@ async def main() -> None:
 
     await seed_faq(SessionFactory)
     await seed_conversations(SessionFactory)
-    print("建表 + 灌入 faq 测试数据 + 演示会话完成")
+    await seed_orders(SessionFactory)
+    print("建表 + 灌入 faq 测试数据 + 演示会话 + 订单种子完成")
 
 
 if __name__ == "__main__":

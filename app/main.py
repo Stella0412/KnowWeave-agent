@@ -7,7 +7,8 @@ from fastapi.responses import FileResponse
 
 from app.config import Settings, settings
 from app.db.base import Base
-from app.db.engine import engine
+from app.db.engine import SessionFactory, engine
+from app.db.seed import seed_orders
 from app.graph.build import build_graph
 from app.graph.runtime import open_checkpointer
 from app.routers import chat, extract, rag_eval
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        await seed_orders(SessionFactory)
     except Exception as e:
         print(f"[警告] 数据库不可用，跳过建表: {e}")
 

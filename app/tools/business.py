@@ -14,16 +14,33 @@ from app.rag.refusal import pool_record, refusal_text
 logger = logging.getLogger(__name__)
 
 
+REFUND_REASON_CATEGORIES = ("七天无理由", "质量问题", "发错货", "不想要了", "其他")
+
+
+def build_query_order(session_factory) -> BaseTool:
+    from app.db.repository import OrderRepository
+
+    @tool
+    async def query_order(order_id: str) -> str:
+        """查询订单信息。当用户询问订单状态、订单内容、签收时间时调用。"""
+        async with session_factory() as session:
+            order = await OrderRepository(session).get(order_id)
+        if order is None:
+            return f"未找到订单 {order_id}，请核对订单号。"
+        signed = order.signed_at.strftime("%Y-%m-%d") if order.signed_at else "未签收"
+        return (
+            f"订单 {order.order_no}：状态={order.status}，商品={order.product_name}，"
+            f"类型={order.product_type}，金额=¥{order.amount}，"
+            f"物流单号={order.tracking_no or '无'}，签收时间={signed}"
+        )
+
+    return query_order
+
+
 @tool
-async def query_order(order_id: str) -> str:
-    """查询订单信息。当用户询问订单状态、订单内容时调用；返回值里的物流单号可继续用于 query_logistics。"""
-    statuses = ["待付款", "已付款", "已发货", "已签收"]
-    tracking_no = f"SF{order_id}CN"
-    return (
-        f"订单 {order_id}：状态={random.choice(statuses)}，"
-        f"金额=¥{random.randint(20, 5000)}，商品=知序精选商品，"
-        f"物流单号={tracking_no}"
-    )
+async def submit_refund(order_no: str) -> str:
+    """提交退款单。仅当判断这一单符合退款条件时调用；前端会展示退款表单。"""
+    return f"已准备退款单：{order_no}"
 
 
 @tool

@@ -2,23 +2,23 @@ import pytest
 
 from app.db.models import ConversationStatus
 from app.db.repository import ChatRepository
+from app.db.seed import seed_orders
 from app.tools.business import (
     build_create_ticket,
     build_query_faq,
+    build_query_order,
     create_ticket_record,
     query_logistics,
-    query_order,
 )
 from app.tools.registry import build_tools
 
 
 @pytest.mark.asyncio
-async def test_mock_tools_echo_input():
-    out = await query_order.ainvoke({"order_id": "1001"})
+async def test_query_order_reads_seeded_table(session_factory):
+    await seed_orders(session_factory)
+    out = await build_query_order(session_factory).ainvoke({"order_id": "1001"})
     assert "1001" in out
     assert "物流单号=SF1001CN" in out
-    out2 = await query_logistics.ainvoke({"tracking_no": "SF1001CN"})
-    assert "SF1001CN" in out2
 
 
 def test_query_logistics_schema_requires_tracking_no():

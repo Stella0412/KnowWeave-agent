@@ -14,7 +14,10 @@ from app.db.models import (
     LowConfidenceSource,
     Message,
     MessageRole,
+    Order,
     QAExtractionStaging,
+    RefundRequest,
+    RefundStatus,
     StagingStatus,
     Ticket,
     TicketStatus,
@@ -379,5 +382,68 @@ class FaithCaseRepository:
         else:
             # 退回未解决：处置说明清空（空着的处置在台账上等于没有交代）
             row.resolution = None
+        await self._session.flush()
+        return row
+
+
+class OrderRepository:
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def list_for_user(
+        self, user_id: str = "anonymous", limit: int = 20
+    ) -> list[Order]:
+        result = await self._session.execute(
+            select(Order)
+            .where(Order.user_id == user_id)
+            .order_by(Order.order_no)
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def get(self, order_no: str) -> Order | None:
+        return await self._session.get(Order, (order_no or "").strip())
+
+
+class RefundRepository:
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def get_pending(
+        self, conversation_id: int, order_no: str
+    ) -> RefundRequest | None:
+        result = await self._session.execute(
+            select(RefundRequest).where(
+                RefundRequest.conversation_id == conversation_id,
+                RefundRequest.order_no == order_no,
+                RefundRequest.status == RefundStatus.PENDING,
+            )
+        )
+        return result.scalars().first()
+
+    async def create(
+        self,
+        conversation_id: int,
+        order_no: str,
+        reason_category: str,
+        note: str | None = None,
+    ) -> RefundRequest:
+        prefix = "R" + datetime.now().strftime("%Y%m%d")
+        count = (
+            await self._session.execute(
+                select(func.count())
+                .select_from(RefundRequest)
+                .where(RefundRequest.refund_no.like(prefix + "%"))
+            )
+        ).scalar() or 0
+        row = RefundRequest(
+            refund_no=f"{prefix}{count + 1:03d}",
+            conversation_id=conversation_id,
+            order_no=order_no,
+            reason_category=reason_category,
+            note=note,
+            status=RefundStatus.PENDING,
+        )
+        self._session.add(row)
         await self._session.flush()
         return row

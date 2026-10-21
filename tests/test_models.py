@@ -25,6 +25,8 @@ def test_tables_registered():
         "qa_extraction_staging",
         "low_confidence_questions",
         "faith_cases",
+        "orders",
+        "refund_requests",
     }
 
 
