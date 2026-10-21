@@ -1,0 +1,8 @@
+{"id":"m1","turns":[{"user":"订单1001的猫爬架什么时候到","intent":"logistics","must_include":[]},{"user":"它能退吗","intent":"refund_return","must_include":["猫爬架"]},{"user":"那物流呢","intent":"logistics","must_include":["猫爬架"]}]}
+{"id":"m2","turns":[{"user":"猫砂多少钱","intent":"product_consult","must_include":[]},{"user":"这个能退吗","intent":"refund_return","must_include":["猫砂"]}]}
+{"id":"m3","turns":[{"user":"订单1002的定制猫窝","intent":"order","must_include":[]},{"user":"这个能退吗","intent":"refund_return","must_include":["猫窝"]}]}
+{"id":"m4","turns":[{"user":"收到的猫粮少了一袋","intent":"after_sale","must_include":[]},{"user":"那物流呢","intent":"logistics","must_include":[]}]}
+{"id":"m5","turns":[{"user":"我要投诉物流","intent":"complaint","must_include":[]},{"user":"订单1001到哪了","intent":"logistics","must_include":[]},{"user":"它能退吗","intent":"refund_return","must_include":[]}]}
+{"id":"m6","turns":[{"user":"订单1005的猫罐头","intent":"order","must_include":[]},{"user":"这个能退吗","intent":"refund_return","must_include":["猫罐头"]}]}
+{"id":"m7","turns":[{"user":"你好","intent":"chitchat","must_include":[]},{"user":"订单1001到哪了","intent":"logistics","must_include":[]}]}
+{"id":"m8","turns":[{"user":"你们总部在哪","intent":"other","must_include":[]},{"user":"订单1001到哪了","intent":"logistics","must_include":[]}]}

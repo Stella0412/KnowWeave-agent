@@ -77,4 +77,4 @@
 {"query":"我想问下人生的意义是什么","intent":"other"}
 {"query":"帮我翻译一段英文","intent":"other"}
 {"query":"推荐一部电影吧","intent":"other"}
-{"query":"今天星期几","intent":"other"}
+{"query":"我要退款还要投诉还要改地址","intent":"other"}

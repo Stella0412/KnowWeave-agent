@@ -1,0 +1,15 @@
+{"query":"订单1001的猫爬架能退吗","intent":"refund_return","should_expand":true}
+{"query":"拆封了还能退吗","intent":"refund_return","should_expand":true}
+{"query":"定制猫窝用了十天能退吗","intent":"refund_return","should_expand":true}
+{"query":"生鲜猫罐头能退吗","intent":"refund_return","should_expand":true}
+{"query":"退款多久到账","intent":"refund_return","should_expand":true}
+{"query":"退货运费谁承担","intent":"refund_return","should_expand":true}
+{"query":"收到的猫粮少了一袋怎么处理","intent":"after_sale","should_expand":true}
+{"query":"猫爬架坏了能保修吗","intent":"after_sale","should_expand":true}
+{"query":"发票怎么补开","intent":"after_sale","should_expand":true}
+{"query":"赠品漏发怎么办","intent":"after_sale","should_expand":true}
+{"query":"猫砂多少钱","intent":"product_consult","should_expand":false}
+{"query":"订单1001到哪了","intent":"logistics","should_expand":false}
+{"query":"你好","intent":"chitchat","should_expand":false}
+{"query":"我要投诉","intent":"complaint","should_expand":false}
+{"query":"你们总部在哪","intent":"other","should_expand":false}

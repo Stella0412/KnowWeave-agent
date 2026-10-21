@@ -28,14 +28,27 @@ async def main():
     ]
     confusion = defaultdict(Counter)
     correct = 0
+    parse_failures = 0
+    confidences = []
     for row in rows:
-        output = await model.ainvoke(intent_messages(row["query"]))
-        predicted = getattr(output, "intent", "unknown")
+        try:
+            output = await model.ainvoke(intent_messages(row["query"]))
+            predicted = getattr(output, "intent", "unknown")
+            confidences.append(float(getattr(output, "confidence", 0.0)))
+        except Exception as exc:
+            parse_failures += 1
+            predicted = "unknown"
+            print(f"[PARSE-FAIL] {row['query']}: {exc}")
         confusion[row["intent"]][predicted] += 1
         correct += int(predicted == row["intent"])
         print(f"[{row['intent']}→{predicted}] {row['query']}")
 
+    other_total = sum(1 for row in rows if row["intent"] == "other")
+    other_correct = confusion["other"]["other"]
     print(f"\n意图准确率: {correct}/{len(rows)} = {correct / len(rows):.1%}")
+    print(f"JSON 可解析率: {(len(rows) - parse_failures) / len(rows):.1%}")
+    print(f"other 召回: {other_correct}/{other_total}")
+    print(f"平均 confidence: {sum(confidences) / len(confidences):.3f}")
     print("\n混淆矩阵（行=标注，列=预测）:")
     for label in INTENTS:
         print(label, dict(confusion[label]))
