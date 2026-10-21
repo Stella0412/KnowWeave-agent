@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from app.db.models import Conversation
 from app.db.repository import ChatRepository
 from app.routers import chat as chat_module
-from app.services.chat_service import ChatService
+from app.services.chat_service import ChatService, _interrupt_actions
 
 
 class FakeChunk:
@@ -281,3 +281,11 @@ async def test_chat_router_empty_message_422():
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/chat", json={"message": ""})
     assert response.status_code == 422
+
+
+def test_interrupt_actions_for_select_order():
+    payload = {"kind": "select_order", "orders": [{"order_no": "1001"}]}
+    actions = _interrupt_actions(payload)
+    assert actions[0]["type"] == "select_order"
+    assert actions[0]["label"] == "选择订单"
+    assert actions[0]["orders"] == [{"order_no": "1001"}]

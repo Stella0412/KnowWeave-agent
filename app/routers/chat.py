@@ -1,18 +1,19 @@
+import json
 from collections.abc import AsyncIterable
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.sse import EventSourceResponse, ServerSentEvent
+from fastapi.sse import EventSourceResponse, ServerSentEvent, format_sse_event
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.llm import build_chat_model, build_structured_model
 from app.db.engine import SessionFactory
-from app.db.repository import ChatRepository
-from app.prompts.orchestrator import IntentOutput
-from app.schemas.chat import ChatRequest
+from app.db.repository import ChatRepository, OrderRepository, RefundRepository
+from app.prompts.orchestrator import CorefOutput, ExpansionOutput, IntentOutput
+from app.schemas.chat import ChatRequest, RefundRequest, ResumeRequest
 from app.services.chat_service import ChatService
-from app.tools.business import create_ticket_record
+from app.tools.business import REFUND_REASON_CATEGORIES, create_ticket_record
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -34,12 +35,18 @@ def _get_chat_service(request: Request) -> ChatService:
             raise RuntimeError("图未初始化：请通过 app.main lifespan 启动")
         _chat_service = ChatService(
             build_chat_model(settings),
-            build_structured_model(settings, IntentOutput, temperature=0.0),
+            build_structured_model(
+                settings, IntentOutput, temperature=0.0,
+                model_name=settings.intent_model or None,
+            ),
             SessionFactory,
             graph,
             token_budget=settings.token_budget,
             tool_timeout=settings.tool_timeout,
             tool_retries=settings.tool_retries,
+            coref_model=build_structured_model(settings, CorefOutput, temperature=0.0),
+            expansion_model=build_structured_model(settings, ExpansionOutput, temperature=0.0),
+            intent_mode=settings.intent_mode,
         )
     return _chat_service
 
@@ -56,6 +63,56 @@ async def chat_agent(req: ChatRequest, request: Request) -> dict:
         return await _get_chat_service(request).run(req.session_id, req.message)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _sse_data(agen):
+    """把 ChatService 的事件 dict 编码成与 /chat 一致的 SSE 线格式（data: JSON）。"""
+    async for event in agen:
+        yield format_sse_event(data_str=json.dumps(event, ensure_ascii=False))
+
+
+@router.post("/resume")
+async def chat_resume(req: ResumeRequest, request: Request) -> EventSourceResponse:
+    service = _get_chat_service(request)
+    try:
+        await service.validate_resume(req.session_id, req.order_no)
+    except ValueError as exc:
+        message = str(exc)
+        status = 400 if ("session_id" in message or "待选择" in message) else 404
+        raise HTTPException(status_code=status, detail=message) from exc
+    return EventSourceResponse(_sse_data(service.resume_stream(req.session_id, req.order_no)))
+
+
+@router.post("/agent/resume")
+async def chat_agent_resume(req: ResumeRequest, request: Request) -> dict:
+    try:
+        return await _get_chat_service(request).run_resume(req.session_id, req.order_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/refund")
+async def refund(req: RefundRequest) -> dict:
+    if req.reason_category not in REFUND_REASON_CATEGORIES:
+        raise HTTPException(status_code=400, detail="退款原因不在固定类目内")
+    try:
+        conversation_id = int(req.session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="session_id 必须是数字") from exc
+    async with SessionFactory() as session:
+        conv = await ChatRepository(session).get_conversation(conversation_id)
+        order = await OrderRepository(session).get(req.order_no)
+        if conv is None or order is None or order.user_id != conv.user_id:
+            raise HTTPException(status_code=404, detail="会话或订单不存在")
+        repo = RefundRepository(session)
+        existing = await repo.get_pending(conversation_id, req.order_no)
+        if existing is not None:
+            return {"refund_no": existing.refund_no}
+        row = await repo.create(
+            conversation_id, req.order_no, req.reason_category, req.note
+        )
+        await session.commit()
+        return {"refund_no": row.refund_no}
 
 
 @router.post("/ticket")
