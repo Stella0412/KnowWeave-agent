@@ -140,3 +140,36 @@ async def test_retrieve_weak_policy_sets_weak_evidence(monkeypatch, session_fact
     assert update["evidence_strong"] is False
     assert update["refusal_source"] == "retrieval_low_conf"
     assert update["policy_refused"] is True
+
+
+@pytest.mark.asyncio
+async def test_log_turn_exposes_ch06_fields_on_trace():
+    runtime = SimpleNamespace(context=SimpleNamespace(intent_mode="accuracy"))
+    state = {
+        "messages": [HumanMessage(content="订单1001能退吗")],
+        "trace": {"t0": 0.0},
+        "resolved_query": "订单1001能退吗",
+        "coref_source": "model",
+        "intent_confidence": 0.9,
+        "order_no": "1001",
+        "order_error": None,
+        "policy_queries": ["q1"],
+        "expand_degraded": False,
+        "policy_refused": False,
+        "refund_offered": True,
+        "flow_steps": ["fetch_order"],
+        "suggested_actions": [],
+    }
+    update = await nodes.log_turn(state, runtime)
+    trace = update["trace"]
+    assert trace["resolved_query"] == "订单1001能退吗"
+    assert trace["coref_source"] == "model"
+    assert trace["intent_confidence"] == 0.9
+    assert trace["intent_mode"] == "accuracy"
+    assert trace["order_no"] == "1001"
+    assert trace["order_error"] is None
+    assert trace["policy_queries"] == ["q1"]
+    assert trace["expand_degraded"] is False
+    assert trace["policy_refused"] is False
+    assert trace["refund_offered"] is True
+    assert trace["flow_steps"] == ["fetch_order"]

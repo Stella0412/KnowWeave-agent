@@ -461,4 +461,21 @@ async def log_turn(state, runtime):
         "latency_ms": trace["latency_ms"],
     }
     logger.info(json.dumps(payload, ensure_ascii=False))
+    # ch06 验收口径：/chat/agent 与手动验收读 trace.resolved_query/order_no/flow_steps/policy_queries。
+    # 这些字段此前只进 JSON 日志 payload，不随 trace 返回；这里原样并入 trace，日志不变。
+    trace.update(
+        {
+            "resolved_query": state.get("resolved_query"),
+            "coref_source": state.get("coref_source"),
+            "intent_confidence": state.get("intent_confidence"),
+            "intent_mode": getattr(runtime.context, "intent_mode", "accuracy"),
+            "order_no": state.get("order_no"),
+            "order_error": state.get("order_error"),
+            "policy_queries": state.get("policy_queries") or [],
+            "expand_degraded": state.get("expand_degraded"),
+            "policy_refused": state.get("policy_refused"),
+            "refund_offered": state.get("refund_offered"),
+            "flow_steps": state.get("flow_steps") or [],
+        }
+    )
     return {"trace": trace}
