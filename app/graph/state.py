@@ -20,6 +20,7 @@ class ConversationState(TypedDict, total=False):
     resolved_query: str | None
     coref_source: str | None
     intent: str | None
+    intent_confidence: float | None
     intent_source: str | None
     route: str | None
 

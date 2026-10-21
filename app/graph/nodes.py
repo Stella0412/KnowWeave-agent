@@ -33,19 +33,28 @@ def _last_user_text(messages) -> str:
 
 
 async def classify_intent(state, runtime):
-    question = _last_user_text(state.get("messages", []))
+    question = state.get("resolved_query") or _last_user_text(state.get("messages", []))
+    messages = list(state.get("messages") or [])
+    history = messages[:-1][-6:] if messages and isinstance(messages[-1], HumanMessage) else messages[-6:]
     try:
-        result = await runtime.context.intent_model.ainvoke(intent_messages(question))
+        result = await runtime.context.intent_model.ainvoke(
+            intent_messages(question, history)
+        )
         intent = getattr(result, "intent", None)
+        confidence = float(getattr(result, "confidence", None))
         if intent not in ROUTE_BY_INTENT:
             raise ValueError(f"未知意图: {intent!r}")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"置信度越界: {confidence!r}")
         source = "model"
     except Exception:
-        logger.warning("意图分类失败，兜底 after_sale", exc_info=True)
-        intent = "after_sale"
+        logger.warning("意图分类失败，兜底 other", exc_info=True)
+        intent = "other"
+        confidence = None
         source = "fallback"
     return {
         "intent": intent,
+        "intent_confidence": confidence,
         "route": ROUTE_BY_INTENT[intent],
         "intent_source": source,
     }

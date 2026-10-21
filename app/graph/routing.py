@@ -2,17 +2,18 @@
 
 INTENTS = (
     "logistics", "order", "product_consult", "refund_return",
-    "after_sale", "complaint", "chitchat",
+    "after_sale", "complaint", "chitchat", "other",
 )
 
 ROUTE_BY_INTENT = {
     "logistics": "business",
     "order": "business",
     "product_consult": "knowledge",
-    "refund_return": "knowledge",
-    "after_sale": "business",
+    "refund_return": "refund_flow",
+    "after_sale": "refund_flow",
     "complaint": "complaint",
     "chitchat": "chitchat",
+    "other": "clarify",
 }
 
 

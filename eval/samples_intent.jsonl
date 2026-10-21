@@ -68,3 +68,13 @@
 {"query":"早上好","intent":"chitchat"}
 {"query":"再见","intent":"chitchat"}
 {"query":"你能陪我聊聊天吗","intent":"chitchat"}
+{"query":"你们总部在哪","intent":"other"}
+{"query":"帮我写首诗","intent":"other"}
+{"query":"那个东西怎么回事","intent":"other"}
+{"query":"今天股市会涨吗","intent":"other"}
+{"query":"你能帮我订张机票吗","intent":"other"}
+{"query":"这个怎么样","intent":"other"}
+{"query":"我想问下人生的意义是什么","intent":"other"}
+{"query":"帮我翻译一段英文","intent":"other"}
+{"query":"推荐一部电影吧","intent":"other"}
+{"query":"今天星期几","intent":"other"}

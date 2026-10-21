@@ -41,6 +41,8 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
             "business": "agent_llm",
             "complaint": "complaint_reply",
             "chitchat": "chitchat_reply",
+            "clarify": "agent_llm",
+            "refund_flow": "agent_llm",
         },
     )
     graph.add_edge("forced_rag", "confidence_check")

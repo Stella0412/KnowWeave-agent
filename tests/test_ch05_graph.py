@@ -23,7 +23,7 @@ class FakeIntentModel:
         self.intent = intent
 
     async def ainvoke(self, messages):
-        return IntentOutput(intent=self.intent)
+        return IntentOutput(intent=self.intent, confidence=0.9)
 
 
 class ScriptedAgentModel:
@@ -117,7 +117,7 @@ async def test_kg_question_forced_rag_then_agent(monkeypatch, session_factory):
     graph = build_graph(checkpointer=InMemorySaver())
     state = await _invoke(
         graph, _input("退货政策是什么", conversation_id=cid),
-        _context("refund_return", agent, session_factory),
+        _context("product_consult", agent, session_factory),
     )
     assert state["route"] == "knowledge"
     assert state["trace"]["forced_rag"] is True
@@ -227,7 +227,7 @@ async def test_weak_evidence_blocks_agent_and_records_pool(monkeypatch, session_
     graph = build_graph(checkpointer=InMemorySaver())
     state = await _invoke(
         graph, _input("拆封了还能退吗", conversation_id=cid),
-        _context("refund_return", BoomModel(), session_factory),
+        _context("product_consult", BoomModel(), session_factory),
     )
     assert "暂时没有查到" in state["answer"]
     from sqlalchemy import select
@@ -255,7 +255,7 @@ async def test_retrieval_unavailable_blocks_agent_without_pool(monkeypatch, sess
     graph = build_graph(checkpointer=InMemorySaver())
     state = await _invoke(
         graph, _input("退货政策是什么", conversation_id=cid),
-        _context("refund_return", BoomModel(), session_factory),
+        _context("product_consult", BoomModel(), session_factory),
     )
     assert state["answer"] == KNOWLEDGE_UNAVAILABLE_REPLY
     from sqlalchemy import select
@@ -330,7 +330,7 @@ async def test_create_ticket_intercept_end_to_end(session_factory):
     graph = build_graph(checkpointer=InMemorySaver())
     state = await _invoke(
         graph, _input("商品破损", conversation_id=cid),
-        _context("after_sale", agent, session_factory),
+        _context("clarify", agent, session_factory),
     )
     assert state["suggested_actions"][0]["type"] == "create_ticket"
     assert state["answer"] == "已为您展示建单选项"
