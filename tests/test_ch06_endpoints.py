@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -77,6 +79,21 @@ async def test_resume_rejects_unknown_order_before_streaming(monkeypatch):
     monkeypatch.setattr(chat_module, "_get_chat_service", lambda request: FakeService())
     resp = await _post("/chat/resume", {"session_id": "1", "order_no": "9999"})
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resume_streams_successfully(monkeypatch):
+    monkeypatch.setattr(chat_module, "_get_chat_service", lambda request: FakeService())
+    resp = await _post("/chat/resume", {"session_id": "1", "order_no": "1001"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = [
+        json.loads(line[len("data: "):])
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert events[0] == {"type": "token", "content": "选中1001"}
+    assert events[-1] == {"type": "done"}
 
 
 @pytest.mark.asyncio
