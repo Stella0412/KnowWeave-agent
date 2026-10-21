@@ -109,7 +109,10 @@ async def test_agent_llm_keeps_answer_none_when_tool_calls():
 async def test_knowledge_route_excludes_query_faq(monkeypatch):
     captured = {}
 
-    def fake_build_tools(session_factory, conversation_id, turn=None, *, include_faq=True):
+    def fake_build_tools(
+        session_factory, conversation_id, turn=None,
+        *, include_faq=True, include_lookup=True, include_refund=False,
+    ):
         captured["include_faq"] = include_faq
         return []
 

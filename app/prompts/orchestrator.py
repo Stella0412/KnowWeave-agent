@@ -153,3 +153,22 @@ AGENT_SYSTEM_ADDENDUM_BUSINESS = """【本轮是业务数据类问题】
 - 查询物流前，如果只有订单号，先调用 query_order 拿到物流单号，再调用 query_logistics。
 - 需要人工介入时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。
 - 普通咨询不要建议转人工。"""
+
+AGENT_SYSTEM_ADDENDUM_REFUND = """【本轮是退款判定】
+- 订单数据和退款政策证据已经备齐；不要再调用 query_order / query_faq。
+- 只判断「这一单能不能退」，依据必须是订单字段与政策证据。
+- 能退 → 调用 submit_refund(order_no)；它只会生成前端退款单按钮，不会立刻建单。
+- 不能退 → 说明依据，不要调用 submit_refund。
+- 证据不足 → 说明无法确认并建议人工，不要猜。
+- 不要追问退款原因；表单会从固定类目里收集。"""
+
+AGENT_SYSTEM_ADDENDUM_AFTER_SALE = """【本轮是售后判定】
+- 订单数据和售后政策证据已经备齐；不要再调用 query_order / query_faq。
+- 只判断「这一单能不能走对应售后处理」（发票/保修/补发/破损等），依据是订单字段与政策证据。
+- 能处理 → 调用 create_ticket，ticket_type 必须是「售后」；不能处理 → 说明依据并建议人工。
+- 不要调用 submit_refund。"""
+
+AGENT_SYSTEM_ADDENDUM_CLARIFY = """【本轮意图不明确，需要澄清】
+- 先问一个最关键的澄清问题，不要猜用户意图，不要硬塞退款/物流等业务结论。
+- 用户补充后按实际诉求回答；能用 query_faq 查政策就用，能查订单就查订单。
+- 仍无法判断 → 说明范围并建议转人工，不编造。"""
