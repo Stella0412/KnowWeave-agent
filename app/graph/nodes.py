@@ -16,6 +16,7 @@ from app.prompts.orchestrator import (
     KNOWLEDGE_UNAVAILABLE_REPLY,
     CorefOutput,
     coref_messages,
+    expansion_messages,
     intent_messages,
 )
 from app.rag.pipeline import run_pipeline
@@ -83,6 +84,52 @@ async def coref(state, runtime):
         return {"resolved_query": current, "coref_source": "fallback"}
     source = "passthrough" if _norm_question(resolved) == _norm_question(current) else "model"
     return {"resolved_query": resolved, "coref_source": source}
+
+
+def _unique_queries(raw, fallback: str) -> tuple[list[str], bool]:
+    out: list[str] = []
+    for item in raw or []:
+        q = str(item or "").strip()
+        if q and q not in out:
+            out.append(q)
+    if not out:
+        # 空输出按失败处理：退化为单查询，不拿空串或重复串去召回。
+        return [fallback], True
+    degraded = len(out) < 3
+    suffixes = ("政策条件", "时限与起算点", "例外情形")
+    while len(out) < 3:
+        out.append(f"{fallback}（{suffixes[len(out)]}）")
+    return out[:3], degraded
+
+
+async def refund_expand(state, runtime):
+    question = state.get("resolved_query") or _last_user_text(state.get("messages", []))
+    trace = dict(state.get("trace") or {})
+    model = getattr(runtime.context, "expansion_model", None)
+    degraded = False
+    if model is None:
+        queries = [question]
+        degraded = True
+    else:
+        try:
+            result = await model.ainvoke(
+                expansion_messages(question, state.get("intent") or "", state.get("order_data"))
+            )
+            queries, degraded = _unique_queries(getattr(result, "queries", []), question)
+        except Exception:
+            logger.warning("查询扩写失败，退化为单查询", exc_info=True)
+            queries = [question]
+            degraded = True
+    trace["expansion_degraded"] = degraded
+    steps = list(state.get("flow_steps") or [])
+    if "expand" not in steps:
+        steps.append("expand")
+    return {
+        "policy_queries": queries,
+        "expand_degraded": degraded,
+        "flow_steps": steps,
+        "trace": trace,
+    }
 
 
 async def forced_rag(state, runtime):

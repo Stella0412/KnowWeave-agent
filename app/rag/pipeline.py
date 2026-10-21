@@ -156,6 +156,95 @@ def run_pipeline(
     )
 
 
+def run_expanded_pipeline(
+    queries: list[str],
+    resolved_query: str,
+    *,
+    strategy: str | None = None,
+    filters: dict[str, str | list[str]] | None = None,
+    embed=None,
+    milvus=None,
+    reranker=None,
+    model=None,
+    source_files: dict[str, str] | None = None,
+    recall_top_k: int | None = None,
+    rerank_top_n: int | None = None,
+    rrf_k: int | None = None,
+) -> RagResult:
+    """多查询召回 → 按 chunk id 去重 → 用 resolved_query 精排一次 → 单次自评。"""
+    resolution = (resolved_query or "").strip()[:_QUERY_MAX_LENGTH]
+    cleaned: list[str] = []
+    for item in queries or []:
+        q = (item or "").strip()[:_QUERY_MAX_LENGTH]
+        if q and q not in cleaned:
+            cleaned.append(q)
+    if not cleaned:
+        cleaned = [resolution]
+    chosen = strategy or settings.rag_strategy
+    if not is_valid(chosen):
+        raise ValueError(f"未知检索策略：{chosen}")
+    if not resolution:
+        return _refused(
+            resolution, chosen, RefusalDecision(True, SOURCE_RETRIEVAL, "问题为空，无法检索")
+        )
+
+    top_k = recall_top_k or settings.recall_top_k
+    rrf = rrf_k or settings.rrf_k
+    rerank_n = rerank_top_n or settings.rerank_top_n
+
+    merged: dict[int, Evidence] = {}
+    order: list[int] = []
+    for query in cleaned:
+        dense_vector = embed_query(query, embeddings=embed)
+        candidates = recall(
+            chosen, dense_vector=dense_vector, bm25_query=query,
+            top_k=top_k, rrf_k=rrf, filters=filters, milvus=milvus,
+        )
+        for candidate in candidates:
+            previous = merged.get(candidate.id)
+            if previous is None:
+                merged[candidate.id] = candidate
+                order.append(candidate.id)
+            elif candidate.score > previous.score:
+                merged[candidate.id] = candidate
+    candidates = [merged[item_id] for item_id in order]
+
+    rerank_degraded = False
+    rerank_score: float | None = None
+    items = candidates
+    if has_rerank(chosen) and candidates:
+        items, rerank_score, rerank_degraded = rerank_stage(
+            candidates, resolution, reranker=reranker, top_n=rerank_n
+        )
+
+    decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
+    if decision.refused:
+        return _refused(
+            resolution, chosen, decision,
+            standard_query=resolution, rerank_degraded=rerank_degraded,
+            rerank_score=rerank_score,
+        )
+
+    assembled = assemble(items)
+    evidence_text = build_evidence_block(assembled)
+    citations = to_citations(assembled, source_files)
+    sufficient, reason = _self_check(resolution, evidence_text, model=model)
+    if sufficient is not None:
+        check = self_check_gate(sufficient, reason)
+        if check.refused:
+            return _refused(
+                resolution, chosen, check,
+                standard_query=resolution, rerank_degraded=rerank_degraded,
+                rerank_score=rerank_score,
+            )
+    return RagResult(
+        refused=False, raw_query=resolution, strategy=chosen,
+        standard_query=resolution, evidence_text=evidence_text,
+        citations=citations, items=assembled,
+        rerank_degraded=rerank_degraded, rerank_score=rerank_score,
+    )
+
+
 def rerank_stage(
     candidates: list[Evidence],
     query: str,

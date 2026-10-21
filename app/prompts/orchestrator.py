@@ -88,6 +88,39 @@ def coref_messages(history, current: str) -> list:
     ]
 
 
+class ExpansionOutput(BaseModel):
+    # 不用 min_length/max_length 卡 schema：模型偶尔只给 2 条时，让节点补齐到 3 条，
+    # 而不是让 Pydantic 直接抛错、整轮退化成单查询。
+    queries: list[str] = Field(
+        description="严格 3 条侧重点不同的检索查询，不能重复、不能为空"
+    )
+
+
+EXPANSION_SYSTEM = """你是电商售后政策检索的查询扩写器。只输出 queries 一个字段，必须恰好 3 条。
+
+要求：
+1. 三条查询各侧重一个方面：政策条件 / 时限与起算点 / 例外与不可退情形 / 运费与责任 / 办理流程与材料。
+2. 保留订单事实（商品名、状态、签收时间），让检索能命中适用条款。
+3. 只产出检索词，不回答问题，不编造政策结论。
+4. 三条必须互不重复、不能为空字符串。"""
+
+
+def expansion_messages(question: str, intent: str, order_data: dict | None) -> list:
+    import json
+
+    order_text = json.dumps(order_data or {}, ensure_ascii=False, default=str)
+    return [
+        SystemMessage(content=EXPANSION_SYSTEM),
+        HumanMessage(
+            content=(
+                f"【用户问题】\n{question}\n\n"
+                f"【意图】\n{intent}\n\n"
+                f"【订单】\n{order_text}"
+            )
+        ),
+    ]
+
+
 COMPLAINT_REPLY = (
     "非常抱歉给您带来了不好的体验，您反馈的问题我已经记录下来了。"
     "您可以选择转接人工客服，或者让我先为您创建一个工单，后续由专人跟进处理。"
