@@ -415,6 +415,15 @@
   </div>
 
 <script>
+  // 本轮工具徽章：一次 ReAct 可能连续调用多个工具（如先 query_order 再 query_logistics），
+  // 必须累积展示，后一个不能把前一个覆盖掉。
+  function mergeToolBadge(prevNames, name) {
+    const names = prevNames ? prevNames.slice() : [];
+    if (!names.includes(name)) names.push(name);
+    return { names, text: '🔧 调用了 ' + names.join('、') };
+  }
+</script>
+<script>
 (() => {
   const chatEl = document.getElementById('chat');
   const inputEl = document.getElementById('input');
@@ -591,14 +600,17 @@
       case 'session':
         sessionId = ev.session_id;
         break;
-      case 'tool_status':
+      case 'tool_status': {
+        const merged = mergeToolBadge(ctx.toolNames, ev.name);
+        ctx.toolNames = merged.names;
         if (!ctx.badge) {
           ctx.badge = document.createElement('div');
           ctx.badge.className = 'tool-badge';
           bubbleEl.insertBefore(ctx.badge, bubbleEl.firstChild);
         }
-        ctx.badge.textContent = '🔧 调用了 ' + ev.name;
+        ctx.badge.textContent = merged.text;
         break;
+      }
       case 'citations':
         ctx.citations = ev.items || [];
         break;

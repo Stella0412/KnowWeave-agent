@@ -211,6 +211,41 @@ async def test_second_turn_does_not_reseed_when_checkpoint_has_messages(session_
 
 
 @pytest.mark.asyncio
+async def test_second_turn_persists_only_new_messages(session_factory):
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        cid = await repo.create_conversation()
+        await repo.add_message(cid, role="user", content="旧问题")
+        await repo.add_message(cid, role="assistant", content="旧回答")
+        await session.commit()
+
+    existing = [HumanMessage(content="旧问题", id="db:1"), AIMessage(content="旧回答")]
+    final = {"messages": existing + [HumanMessage(content="新问题", id="db:3"), AIMessage(content="新回答")]}
+    graph = FakeGraph([], final, existing=existing)
+    await _collect(_service(graph, session_factory), str(cid), "新问题")
+
+    async with session_factory() as session:
+        rows = await ChatRepository(session).list_messages(cid)
+    assert [r.content for r in rows] == ["旧问题", "旧回答", "新问题", "新回答"]
+
+
+@pytest.mark.asyncio
+async def test_turn_msg_offset_counts_existing_checkpoint_messages(session_factory):
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        cid = await repo.create_conversation()
+        await session.commit()
+
+    existing = [HumanMessage(content="旧问题", id="db:1"), AIMessage(content="旧回答")]
+    final = {"messages": existing + [HumanMessage(content="新问题", id="db:3"), AIMessage(content="新回答")]}
+    graph = FakeGraph([], final, existing=existing)
+    await _collect(_service(graph, session_factory), str(cid), "新问题")
+
+    # 图内 log_turn 从该偏移之后统计本轮工具调用，必须跳过 checkpoint 里的历史
+    assert graph.inputs[0]["turn_msg_offset"] == 2
+
+
+@pytest.mark.asyncio
 async def test_graph_error_emits_error(session_factory):
     class BoomGraph(FakeGraph):
         async def astream(self, input, config, context, stream_mode):

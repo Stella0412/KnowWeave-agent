@@ -116,9 +116,17 @@ class ChatService:
         config = thread_config(conversation_id)
         snapshot = await self._graph.aget_state(config)
         existing = list((snapshot.values or {}).get("messages") or []) if snapshot else []
-        input_messages = [] if existing else [_row_to_message(row) for row in history_rows]
-        # checkpoint 为空时，历史来自 MySQL 的补种消息；两种情况都从这段历史之后开始算本轮。
-        turn_msg_offset = len(input_messages)
+        if existing:
+            # checkpoint 里已有历史：本轮只发新消息，历史由 checkpointer 带给图。
+            input_messages = []
+            history_count = len(existing)
+        else:
+            # checkpoint 为空时，历史来自 MySQL 的补种消息。
+            input_messages = [_row_to_message(row) for row in history_rows]
+            history_count = len(input_messages)
+        # 两种情况下都从这段历史之后开始算本轮：log_turn 用该偏移只统计本轮工具调用，
+        # 落库也用它切出本轮新增消息，避免把历史重复写回 MySQL。
+        turn_msg_offset = history_count
         input_messages.append(HumanMessage(content=message, id=f"db:{new_user_id}"))
 
         graph_input = {
