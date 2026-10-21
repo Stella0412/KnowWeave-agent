@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     langgraph_checkpoint_path: str = "data/langgraph_checkpoints.sqlite"
     max_agent_steps: int = 6
 
+    # ch06 意图识别：默认大模型判；小模型升级只留配置种子，本章不实现
+    intent_model: str = ""
+    intent_small_model: str = ""
+    intent_mode: str = "accuracy"
+    intent_conf_threshold: float = 0.7
+
     # MySQL（Docker 起，连接参数从 .env 读）
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
