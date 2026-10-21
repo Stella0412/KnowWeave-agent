@@ -186,12 +186,13 @@ async def refund_fetch_order(state, runtime):
         }
 
     allowed = {order.order_no for order in orders}
-    texts = [state.get("resolved_query") or _last_user_text(state.get("messages", []))]
-    texts.extend(
-        message.content
-        for message in state.get("messages", [])
-        if isinstance(message, HumanMessage) and isinstance(message.content, str)
-    )
+    texts = []
+    for candidate in (
+        state.get("resolved_query"),
+        _last_user_text(state.get("messages", [])),
+    ):
+        if candidate and candidate not in texts:
+            texts.append(candidate)
     order_no = next(
         (no for text in texts for no in _order_numbers(text, allowed)), None
     )

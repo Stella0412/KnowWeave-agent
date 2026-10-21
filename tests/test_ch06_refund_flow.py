@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.db.seed import seed_orders
 from app.graph import nodes
@@ -78,6 +78,71 @@ async def test_fetch_order_missing_number_interrupts_then_uses_choice(
     }
     assert update["order_no"] == "1002"
     assert update["order_data"]["product_type"] == "定制"
+    assert update["flow_steps"] == ["fetch_order"]
+
+
+@pytest.mark.asyncio
+async def test_refund_fetch_order_ignores_order_number_from_older_turns(
+    monkeypatch, session_factory
+):
+    await seed_orders(session_factory)
+    seen = []
+
+    def fake_interrupt(payload):
+        seen.append(payload)
+        return {"order_no": "1002"}
+
+    monkeypatch.setattr(nodes, "interrupt", fake_interrupt)
+    update = await nodes.refund_fetch_order(
+        {
+            "resolved_query": "我要退款",
+            "user_id": "anonymous",
+            "intent": "refund_return",
+            "messages": [
+                HumanMessage(content="订单1001的猫爬架什么时候到"),
+                AIMessage(content="您的猫爬架预计明天送达"),
+                HumanMessage(content="我要退款"),
+            ],
+            "flow_steps": [],
+            "trace": {},
+        },
+        _runtime(session_factory),
+    )
+    assert len(seen) == 1
+    assert seen[0]["kind"] == "select_order"
+    assert update["order_no"] == "1002"
+    assert update["flow_steps"] == ["fetch_order"]
+
+
+@pytest.mark.asyncio
+async def test_refund_fetch_order_uses_order_number_from_resolved_query(
+    monkeypatch, session_factory
+):
+    await seed_orders(session_factory)
+    seen = []
+
+    def fake_interrupt(payload):
+        seen.append(payload)
+        return {"order_no": "1002"}
+
+    monkeypatch.setattr(nodes, "interrupt", fake_interrupt)
+    update = await nodes.refund_fetch_order(
+        {
+            "resolved_query": "订单1001的猫爬架能退吗",
+            "user_id": "anonymous",
+            "intent": "refund_return",
+            "messages": [
+                HumanMessage(content="订单1001的猫爬架什么时候到"),
+                AIMessage(content="您的猫爬架预计明天送达"),
+                HumanMessage(content="我要退款"),
+            ],
+            "flow_steps": [],
+            "trace": {},
+        },
+        _runtime(session_factory),
+    )
+    assert seen == []
+    assert update["order_no"] == "1001"
     assert update["flow_steps"] == ["fetch_order"]
 
 
