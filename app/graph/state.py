@@ -17,6 +17,8 @@ class ConversationState(TypedDict, total=False):
     user_id: str
     conversation_id: int
 
+    resolved_query: str | None
+    coref_source: str | None
     intent: str | None
     intent_source: str | None
     route: str | None
@@ -47,3 +49,6 @@ class GraphContext:
     token_budget: int = 4096
     tool_timeout: float = 5.0
     tool_retries: int = 1
+    coref_model: Any = None
+    expansion_model: Any = None
+    intent_mode: str = "accuracy"

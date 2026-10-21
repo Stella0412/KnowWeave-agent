@@ -14,6 +14,8 @@ from app.prompts.orchestrator import (
     CHITCHAT_REPLY,
     COMPLAINT_REPLY,
     KNOWLEDGE_UNAVAILABLE_REPLY,
+    CorefOutput,
+    coref_messages,
     intent_messages,
 )
 from app.rag.pipeline import run_pipeline
@@ -49,8 +51,29 @@ async def classify_intent(state, runtime):
     }
 
 
+def _norm_question(text: str) -> str:
+    return (text or "").strip().rstrip("。！？!?")
+
+
 async def coref(state, runtime):
-    return {}
+    messages = list(state.get("messages") or [])
+    current = _last_user_text(messages)
+    if not current:
+        return {"resolved_query": "", "coref_source": "passthrough"}
+    history = messages[:-1][-8:] if messages and isinstance(messages[-1], HumanMessage) else messages[-8:]
+    model = getattr(runtime.context, "coref_model", None)
+    if model is None:
+        return {"resolved_query": current, "coref_source": "passthrough"}
+    try:
+        result = await model.ainvoke(coref_messages(history, current))
+        resolved = (getattr(result, "resolved_query", "") or "").strip()
+        if not resolved:
+            raise ValueError("resolved_query 为空")
+    except Exception:
+        logger.warning("指代消解失败，原话透传", exc_info=True)
+        return {"resolved_query": current, "coref_source": "fallback"}
+    source = "passthrough" if _norm_question(resolved) == _norm_question(current) else "model"
+    return {"resolved_query": resolved, "coref_source": source}
 
 
 async def forced_rag(state, runtime):

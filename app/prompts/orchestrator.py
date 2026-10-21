@@ -38,6 +38,42 @@ def intent_messages(question: str) -> list:
     ]
 
 
+class CorefOutput(BaseModel):
+    resolved_query: str = Field(
+        description="补全指代和省略后的完整问题；无需改写时原样返回用户原话"
+    )
+
+
+COREF_SYSTEM = """你是电商客服的指代消解器。只输出 resolved_query 一个字段。
+
+规则：
+1. 结合最近对话，把「它能退吗」「那明天呢」这类带指代/省略的话补全成脱离上下文也能看懂的完整问句。
+2. 只补指代和省略，把口语归一成标准问法；不回答、不解释、不新增诉求。
+3. 订单号、型号、数字、时限、商品名一律保留，不改写、不补全。
+4. 原问题已经完整、指代已明确 → 原样返回，不强行改写。
+5. 无法判断指代指什么 → 原样返回，不猜。"""
+
+
+def _history_text(history) -> str:
+    lines = []
+    for message in history or []:
+        role = "用户" if isinstance(message, HumanMessage) else "客服"
+        text = message.content if isinstance(message.content, str) else str(message.content or "")
+        if text.strip():
+            lines.append(f"{role}：{text.strip()}")
+    return "\n".join(lines)
+
+
+def coref_messages(history, current: str) -> list:
+    history_text = _history_text(history) or "（无历史）"
+    return [
+        SystemMessage(content=COREF_SYSTEM),
+        HumanMessage(
+            content=f"【最近对话】\n{history_text}\n\n【当前用户消息】\n{current}"
+        ),
+    ]
+
+
 COMPLAINT_REPLY = (
     "非常抱歉给您带来了不好的体验，您反馈的问题我已经记录下来了。"
     "您可以选择转接人工客服，或者让我先为您创建一个工单，后续由专人跟进处理。"

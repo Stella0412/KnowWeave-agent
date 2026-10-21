@@ -40,8 +40,12 @@ def _state(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_coref_is_passthrough():
-    assert await nodes.coref(_state(), _runtime()) == {}
+async def test_coref_is_passthrough_without_model():
+    update = await nodes.coref(_state(), _runtime())
+    assert update == {
+        "resolved_query": "退货政策是什么",
+        "coref_source": "passthrough",
+    }
 
 
 @pytest.mark.asyncio
