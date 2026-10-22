@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.graph.agent import agent_llm, agent_tools, build_agent_system_prompt
 from app.tools.business import REFUND_REASON_CATEGORIES
@@ -20,6 +20,47 @@ class FakeAgent:
     async def ainvoke(self, messages):
         self.calls.append(messages)
         return AIMessage(content="答")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_no", ["1004", "1005"])
+@pytest.mark.parametrize("after_tool", [False, True])
+async def test_refund_order_switch_excludes_previous_turn_but_keeps_current_tools(
+    session_factory, order_no, after_tool,
+):
+    model = FakeAgent()
+    runtime = _runtime(session_factory)
+    runtime.context.model = model
+    old = [
+        HumanMessage(content="我要退1001"),
+        AIMessage(content="订单1001猫爬架可以退，退款表单已生成"),
+    ]
+    current = [HumanMessage(content="我要退款")]
+    if after_tool:
+        current += [
+            AIMessage(content="", tool_calls=[{
+                "name": "submit_refund", "args": {"order_no": order_no},
+                "id": "current-call", "type": "tool_call",
+            }]),
+            ToolMessage(content="该订单不能生成退款表单", tool_call_id="current-call"),
+        ]
+    state = _state(
+        messages=old + current, turn_msg_offset=len(old),
+        order_no=order_no,
+        order_data={"order_no": order_no, "product_name": "猫砂" if order_no == "1004" else "猫罐头"},
+        resolved_query="我要退款",
+    )
+    await agent_llm(state, runtime)
+    sent = model.calls[0]
+    assert not any("1001" in str(m.content) for m in sent)
+    user = next(m for m in sent if isinstance(m, HumanMessage))
+    assert order_no in user.content
+    assert "我要退款" in user.content
+    assert state["messages"] == old + current
+    assert current[0].content == "我要退款"
+    if after_tool:
+        assert sent[-1].tool_call_id == "current-call"
+        assert sent[-2].tool_calls[0]["id"] == "current-call"
 
 
 def _runtime(session_factory):

@@ -103,12 +103,25 @@ async def agent_llm(state, runtime):
         )
     )
     history = list(state.get("messages") or [])
+    if route == "refund_flow":
+        # 指代已经消解、订单和政策已经确定；旧轮次的订单/表单结论不能参与本轮判定。
+        # 保留当前轮次的完整 ReAct 工具配对，避免第二次推理丢失工具结果。
+        history = history[int(state.get("turn_msg_offset", 0)):]
     # coref 已经把「那大概什么时候能到」补全成本轮真正的问题；模型看到的若还是原话，
     # 紧邻的退款回答会把「到」带偏（答成退款到账时间）。只替换发给模型的最后一条用户消息，
     # 状态和落库里的用户原话保持不变。
     resolved = (state.get("resolved_query") or "").strip()
-    if resolved and history and isinstance(history[-1], HumanMessage):
-        history[-1] = history[-1].model_copy(update={"content": resolved})
+    for index in range(len(history) - 1, -1, -1):
+        if not isinstance(history[index], HumanMessage):
+            continue
+        current = resolved or _text_of(history[index].content)
+        if route == "refund_flow" and state.get("order_no"):
+            current += (
+                f"\n【本轮已确认订单】{state['order_no']}。"
+                "请仅处理这张订单，以系统提供的本轮订单数据为准。"
+            )
+        history[index] = history[index].model_copy(update={"content": current})
+        break
     trimmed = ContextStore(context.token_budget).trim(system, history)
     ai = await context.model.bind_tools(tools).ainvoke([system] + trimmed)
     update = {
