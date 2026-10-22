@@ -1373,14 +1373,18 @@ function updateRunState(state) {
   }
 }
 
-async function fetchStatus() {
-  const resp = await fetch("/rag-eval/api/status");
+async function fetchJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
 }
 
+async function fetchStatus() {
+  return fetchJson("/rag-eval/api/status");
+}
+
 async function fetchLatest() {
-  const resp = await fetch("/rag-eval/api/latest");
-  const body = await resp.json();
+  const body = await fetchJson("/rag-eval/api/latest");
   latest = body.latest;
   renderApp();
 }
@@ -1429,7 +1433,26 @@ $("run-retrieval").addEventListener("click", () => startRun("retrieval"));
 $("run-full").addEventListener("click", () => startRun("full"));
 
 (async function init() {
-  await fetchLatest();
+  try {
+    await fetchLatest();
+  } catch (err) {
+    const detail = err && err.message ? err.message : String(err);
+    const text = "无法连接服务：" + detail +
+      "（请确认已启动 uvicorn，并通过 http://127.0.0.1:8000/rag-eval 打开）";
+    const el = $("run-state");
+    el.className = "run-state error";
+    el.textContent = text;
+    const box = document.createElement("div");
+    box.className = "empty";
+    const big = document.createElement("div");
+    big.className = "big";
+    big.textContent = "🔌";
+    const msg = document.createElement("div");
+    msg.textContent = text;
+    box.append(big, msg);
+    $("content").replaceChildren(box);
+    return;
+  }
   const state = await fetchStatus().catch(() => null);
   if (state) {
     updateRunState(state);
