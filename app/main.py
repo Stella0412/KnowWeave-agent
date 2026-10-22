@@ -12,7 +12,7 @@ from app.db.engine import SessionFactory, engine
 from app.db.seed import seed_orders
 from app.graph.build import build_graph
 from app.graph.runtime import open_checkpointer
-from app.routers import chat, extract, rag_eval
+from app.routers import chat, conversations, extract, rag_eval
 from app.services.chat_service import build_chat_service
 from app.services.context_manager import log_startup_budget
 from app.services.token_counter import TokenCounter
@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="知序智能客服", lifespan=lifespan)
 app.include_router(chat.router)
+app.include_router(conversations.router)
 app.include_router(extract.router)
 app.include_router(rag_eval.router)
 
