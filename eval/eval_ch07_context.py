@@ -114,6 +114,15 @@ async def run(mode: str, turns: int, base_url: str) -> int:
         )
         text = answer.get("answer") or ""
         assert "1001" in text or "猫爬架" in text, f"摘要未回答问题: {text}"
+        history = [
+            e for e in _events_for(int(session_id))
+            if e.get("event") == "history_ctx"
+        ]
+        assert history, "演示配置未出现 history_ctx"
+        injected = history[-1].get("summary") or ""
+        assert "1001" in injected and "猫爬架" in injected, (
+            f"最终轮未注入早期订单摘要: {injected[:120]}"
+        )
         print("PASS 演示配置：降级/触发/完成级联，摘要可回答早期订单")
         return 0
 
