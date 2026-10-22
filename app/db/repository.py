@@ -91,6 +91,54 @@ class ChatRepository:
         if conv is not None:
             conv.updated_at = datetime.now()
 
+    async def set_layer1_from(self, conversation_id: int, msg_id: int) -> None:
+        conv = await self.get_conversation(conversation_id)
+        if conv is not None:
+            conv.layer1_from_msg_id = msg_id
+
+    async def list_conversations_for_user(self, user_id: str = "anonymous") -> list[Conversation]:
+        result = await self._session.execute(
+            select(Conversation)
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        )
+        return list(result.scalars())
+
+    async def first_user_content(self, conversation_id: int) -> str:
+        result = await self._session.execute(
+            select(Message.content)
+            .where(Message.conversation_id == conversation_id, Message.role == MessageRole.USER)
+            .order_by(Message.id)
+            .limit(1)
+        )
+        return result.scalar() or ""
+
+    async def list_ui_messages(self, conversation_id: int) -> list[Message]:
+        result = await self._session.execute(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
+                Message.content.is_not(None),
+                func.trim(Message.content) != "",
+            )
+            .order_by(Message.id)
+        )
+        return list(result.scalars())
+
+    async def count_ui_messages(self, conversation_id: int) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
+                Message.content.is_not(None),
+                func.trim(Message.content) != "",
+            )
+        )
+        return int(result.scalar() or 0)
+
     async def set_conversation_status(
         self, conversation_id: int, status: ConversationStatus
     ) -> None:

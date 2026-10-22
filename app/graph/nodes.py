@@ -38,6 +38,33 @@ def _last_user_text(messages) -> str:
     return ""
 
 
+def _current_user_msg_id(messages) -> int | None:
+    for message in reversed(messages or []):
+        if isinstance(message, HumanMessage):
+            raw = getattr(message, "id", None)
+            if isinstance(raw, str) and raw.startswith("db:"):
+                try:
+                    return int(raw[3:])
+                except ValueError:
+                    return None
+    return None
+
+
+async def prepare_context(state, runtime):
+    manager = getattr(runtime.context, "context_manager", None)
+    if manager is None:
+        return {"context_meta": {}}
+    current_id = state.get("turn_user_msg_id") or _current_user_msg_id(
+        state.get("messages", [])
+    )
+    if current_id is None:
+        return {"context_meta": {}}
+    meta = await manager.prepare(
+        state["conversation_id"], state.get("messages", []), current_id
+    )
+    return {"context_meta": meta}
+
+
 async def classify_intent(state, runtime):
     question = state.get("resolved_query") or _last_user_text(state.get("messages", []))
     messages = list(state.get("messages") or [])

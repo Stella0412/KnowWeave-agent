@@ -1,10 +1,9 @@
-"""会话上下文的分层规划器。
-
-本文件先落纯函数；prepare/shared_history 在后续任务补齐。
-"""
+"""会话上下文的分层规划器。"""
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
 
 from langchain_core.messages import (
@@ -13,9 +12,13 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
     ToolMessage,
+    trim_messages,
 )
 
-from app.services.token_counter import text_of
+from app.db.repository import ChatRepository
+from app.services.token_counter import TokenCounter, text_of
+
+logger = logging.getLogger("knowweave.context")
 
 
 @dataclass
@@ -124,3 +127,321 @@ def serialize_message(message: BaseMessage) -> dict:
         "name": getattr(message, "name", None),
         "id": getattr(message, "id", None),
     }
+
+
+class ContextManager:
+    def __init__(
+        self,
+        session_factory,
+        *,
+        counter: TokenCounter,
+        budget,
+        settings,
+        summary_service=None,
+    ):
+        self._session_factory = session_factory
+        self._counter = counter
+        self._budget = budget
+        self._settings = settings
+        self._summary_service = summary_service
+
+    def _flatten(self, turns: list[Turn]) -> list[BaseMessage]:
+        return [message for turn in turns for message in turn.messages]
+
+    def _partition(self, messages, summary_upto, layer1_from, current_id):
+        turns = split_turns(messages)
+        current = None
+        history: list[Turn] = []
+        for turn in turns:
+            if current_id is not None and turn.first_user_msg_id == current_id:
+                current = turn
+                continue
+            history.append(turn)
+        layer3 = [t for t in history if classify_turn(t, summary_upto, layer1_from) == 3]
+        layer2 = [t for t in history if classify_turn(t, summary_upto, layer1_from) == 2]
+        layer1 = [t for t in history if classify_turn(t, summary_upto, layer1_from) == 1]
+        return turns, current, layer3, layer2, layer1
+
+    async def prepare(self, conversation_id: int, messages, current_user_msg_id: int) -> dict:
+        async with self._session_factory() as session:
+            repo = ChatRepository(session)
+            conv = await repo.get_conversation(conversation_id)
+            if conv is None:
+                raise ValueError("会话不存在")
+            segments = await repo.list_summaries(conversation_id)
+
+        summary_upto = conv.summary_upto_msg_id
+        max_upto = max((row.upto_msg_id for row in segments), default=None)
+        if summary_upto is None and max_upto is not None:
+            logger.warning(json.dumps({
+                "event": "anchor_normalized", "conversation_id": conversation_id,
+                "summary_upto": max_upto,
+            }, ensure_ascii=False))
+            summary_upto = max_upto
+
+        layer1_from = conv.layer1_from_msg_id
+        turns = split_turns(messages)
+        anchored = [t.first_user_msg_id for t in turns if t.first_user_msg_id is not None]
+        if layer1_from is None:
+            after = [anchor for anchor in anchored if summary_upto is None or anchor > summary_upto]
+            layer1_from = after[0] if after else (anchored[0] if anchored else None)
+
+        effective_summary = summary_upto
+        if summary_upto is not None and layer1_from is not None and summary_upto >= layer1_from:
+            valid = [row.upto_msg_id for row in segments if row.upto_msg_id < layer1_from]
+            effective_summary = max(valid) if valid else None
+            logger.warning(json.dumps({
+                "event": "anchor_inconsistent", "conversation_id": conversation_id,
+                "summary_upto": summary_upto, "layer1_from": layer1_from,
+                "effective_summary_upto": effective_summary,
+            }, ensure_ascii=False))
+
+        _, current, _, layer2, layer1 = self._partition(
+            messages, effective_summary, layer1_from, current_user_msg_id
+        )
+        layer1_tokens = self._counter.count_messages(self._flatten(layer1))
+        demoted_from = layer1_from
+        demoted_count = 0
+        while layer1_tokens > self._budget.layer1 and len(layer1) > 1:
+            moved = layer1.pop(0)
+            layer2.insert(0, moved)
+            demoted_count += 1
+            layer1_tokens = self._counter.count_messages(self._flatten(layer1))
+        if layer1_tokens > self._budget.layer1:
+            logger.warning(json.dumps({
+                "event": "layer1_overflow", "conversation_id": conversation_id,
+                "tokens": layer1_tokens, "budget": self._budget.layer1,
+            }, ensure_ascii=False))
+
+        new_layer1_from = (
+            layer1[0].first_user_msg_id if layer1 else current_user_msg_id
+        )
+        if layer1_from is None or new_layer1_from != layer1_from:
+            async with self._session_factory() as session:
+                repo = ChatRepository(session)
+                row = await repo.get_conversation_for_update(conversation_id)
+                if row is not None and (
+                    row.layer1_from_msg_id is None or new_layer1_from > row.layer1_from_msg_id
+                ):
+                    row.layer1_from_msg_id = new_layer1_from
+                    await session.commit()
+        # 首次把 NULL 落成实际值不是降级；只有真的整轮移动才允许打降级日志。
+        if demoted_count:
+            logger.info(json.dumps({
+                "event": "layer1 降级", "conversation_id": conversation_id,
+                "from": demoted_from, "to": new_layer1_from,
+                "batch": demoted_count,
+            }, ensure_ascii=False))
+        layer1_from = new_layer1_from
+
+        layer2_raw = self._counter.count_messages(self._flatten(layer2))
+        summary_triggered = False
+        if (
+            layer2_raw > self._budget.layer2
+            and self._summary_service is not None
+            and layer2
+        ):
+            frozen = self._freeze(layer2, effective_summary)
+            if frozen is not None:
+                from app.services.summary_service import SummaryRange
+
+                summary_triggered = await self._summary_service.schedule(
+                    conversation_id,
+                    SummaryRange(
+                        from_msg_id=frozen[0].first_user_msg_id,
+                        upto_msg_id=frozen[-1].first_user_msg_id,
+                        expected_summary_upto=effective_summary,
+                    ),
+                )
+                logger.info(json.dumps({
+                    "event": "summary trigger", "conversation_id": conversation_id,
+                    "layer2_tokens": layer2_raw, "budget": self._budget.layer2,
+                    "from_msg_id": frozen[0].first_user_msg_id,
+                    "upto_msg_id": frozen[-1].first_user_msg_id,
+                }, ensure_ascii=False))
+
+        summary_text, selected = self.select_summary(
+            segments, self._settings.summary_inject_max_tokens
+        )
+        meta = {
+            "conversation_id": conversation_id,
+            "turn_user_msg_id": current_user_msg_id,
+            "summary_upto": summary_upto,
+            "effective_summary_upto": effective_summary,
+            "layer1_from": layer1_from,
+            "summary_text": summary_text,
+            "summary_segments": selected,
+            "layer1_tokens": layer1_tokens,
+            "layer2_tokens": layer2_raw,
+            "layer1_budget": self._budget.layer1,
+            "layer2_budget": self._budget.layer2,
+            "demoted": demoted_count > 0,
+            "summary_triggered": summary_triggered,
+            "budget": self._budget.as_dict(),
+        }
+        window = self.shared_history(messages, meta)
+        logger.info(json.dumps({
+            "event": "history_ctx", "conversation_id": conversation_id,
+            "turn_user_msg_id": current_user_msg_id,
+            "summary": summary_text, "summary_segments": selected,
+            "window": [serialize_message(m) for m in window],
+            "window_count": len(window),
+            "estimated_tokens": self._counter.count_messages(window),
+            "budget": self._settings.classifier_history_max_tokens,
+            "anchors": {
+                "summary_upto": summary_upto, "layer1_from": layer1_from,
+            },
+        }, ensure_ascii=False))
+        return meta
+
+    def _freeze(self, layer2: list[Turn], summary_upto):
+        selected: list[Turn] = []
+        total = 0
+        for turn in layer2:
+            tokens = self._counter.count_messages(turn.messages)
+            if selected and total + tokens > self._settings.summary_input_max_tokens:
+                break
+            selected.append(turn)
+            total += tokens
+        return selected or None
+
+    def select_summary(self, segments, max_tokens: int) -> tuple[str, list[int]]:
+        if not segments:
+            return "", []
+        rendered = [
+            (row.seq, f"【第{row.seq}段】{row.content}") for row in segments
+        ]
+        full = "\n".join(text for _, text in rendered)
+        if self._counter.count_text(full) <= max_tokens:
+            return full, [seq for seq, _ in rendered]
+        first_seq, first_text = rendered[0]
+        kept = [first_text]
+        used = self._counter.count_text(first_text)
+        recent: list[tuple[int, str]] = []
+        for seq, text in reversed(rendered[1:]):
+            cost = self._counter.count_text(text)
+            if used + cost > max_tokens:
+                continue
+            recent.append((seq, text))
+            used += cost
+        recent.reverse()
+        if recent:
+            omitted = len(rendered) - 1 - len(recent)
+            middle = [f"【中间省略 {omitted} 段】"] if omitted else []
+            parts = kept + middle + [text for _, text in recent]
+            selected = [first_seq] + [seq for seq, _ in recent]
+        else:
+            parts = [self._counter.truncate_text(first_text, max_tokens, "…（摘要已截断）")]
+            selected = [first_seq]
+        return "\n".join(parts), selected
+
+    def model_history(self, messages, meta: dict):
+        prefix, current, react = [], None, []
+        if meta:
+            turns = split_turns(messages)
+            current_turn = next(
+                (
+                    turn for turn in turns
+                    if turn.first_user_msg_id == meta.get("turn_user_msg_id")
+                ),
+                None,
+            )
+            layer2_turns: list[Turn] = []
+            layer1_messages: list[BaseMessage] = []
+            for turn in turns:
+                if current_turn is not None and turn is current_turn:
+                    current = turn.messages[0]
+                    # 当前轮的占位 AI（无内容、无工具调用）不代表任何信息，不属于 ReAct 消息。
+                    react = [
+                        message
+                        for message in turn.messages[1:]
+                        if not (
+                            isinstance(message, AIMessage)
+                            and not text_of(message.content)
+                            and not message.tool_calls
+                        )
+                    ]
+                    continue
+                if current_turn is not None and turn.first_user_msg_id == current_turn.first_user_msg_id:
+                    continue
+                layer = classify_turn(
+                    turn, meta.get("effective_summary_upto"), meta.get("layer1_from")
+                )
+                if layer == 2:
+                    layer2_turns.append(turn)
+                elif layer == 1:
+                    layer1_messages.extend(turn.messages)
+            layer2_messages = [
+                message
+                for turn in layer2_turns
+                for message in render_layer2_turn(
+                    turn, self._settings.layer2_assistant_prefix_chars
+                )
+            ]
+            if self._counter.count_messages(layer2_messages) > self._budget.layer2:
+                kept_turns: list[Turn] = []
+                kept_messages: list[BaseMessage] = []
+                for turn in reversed(layer2_turns):
+                    rendered = render_layer2_turn(
+                        turn, self._settings.layer2_assistant_prefix_chars
+                    )
+                    candidate = rendered + kept_messages
+                    if kept_messages and (
+                        self._counter.count_messages(candidate) > self._budget.layer2
+                    ):
+                        break
+                    kept_turns.insert(0, turn)
+                    kept_messages = candidate
+                dropped = len(layer2_turns) - len(kept_turns)
+                if dropped > 0:
+                    layer2_messages = [
+                        HumanMessage(content="【层 2 早期内容待摘要】")
+                    ] + kept_messages
+                    logger.warning(json.dumps({
+                        "event": "layer2_overflow",
+                        "conversation_id": meta.get("conversation_id"),
+                        "tokens": self._counter.count_messages(layer2_messages),
+                        "budget": self._budget.layer2,
+                        "dropped_turns": dropped,
+                    }, ensure_ascii=False))
+                else:
+                    layer2_messages = kept_messages
+            prefix = layer2_messages + layer1_messages
+        if current is None:
+            turns = split_turns(messages)
+            if turns:
+                current_turn = turns[-1]
+                prefix = self._flatten(turns[:-1])
+                current = current_turn.messages[0] if current_turn.messages else None
+                react = [
+                    message
+                    for message in current_turn.messages[1:]
+                    if not (
+                        isinstance(message, AIMessage)
+                        and not text_of(message.content)
+                        and not message.tool_calls
+                    )
+                ]
+        return prefix, current, react
+
+    def shared_history(self, messages, meta: dict):
+        prefix, _, _ = self.model_history(messages, meta)
+        trimmed = trim_messages(
+            prefix,
+            max_tokens=self._settings.classifier_history_max_tokens,
+            token_counter=self._counter,
+            strategy="last",
+            allow_partial=False,
+            start_on="human",
+            include_system=False,
+        )
+        while trimmed and isinstance(trimmed[0], ToolMessage):
+            trimmed.pop(0)
+        if not trimmed and prefix:
+            # 预算小于单条消息时 trim 会清空；至少保留最新一条用户消息，
+            # 否则分类器/指代消解没有上下文可用。
+            last_human = next(
+                (m for m in reversed(prefix) if isinstance(m, HumanMessage)), None
+            )
+            trimmed = [last_human] if last_human is not None else [prefix[-1]]
+        return trimmed

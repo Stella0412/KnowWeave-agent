@@ -12,6 +12,7 @@ from app.graph.nodes import (
     fallback_reply,
     forced_rag,
     log_turn,
+    prepare_context,
     refund_expand,
     refund_fetch_order,
     refund_retrieve,
@@ -28,6 +29,7 @@ from app.graph.state import ConversationState, GraphContext
 def build_graph(*, checkpointer, max_agent_steps: int = 6):
     graph = StateGraph(ConversationState, context_schema=GraphContext)
 
+    graph.add_node("prepare_context", prepare_context)
     graph.add_node("coref", coref)
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("forced_rag", forced_rag)
@@ -42,7 +44,8 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
     graph.add_node("chitchat_reply", chitchat_reply)
     graph.add_node("log", log_turn)
 
-    graph.add_edge(START, "coref")
+    graph.add_edge(START, "prepare_context")
+    graph.add_edge("prepare_context", "coref")
     graph.add_edge("coref", "classify_intent")
     graph.add_conditional_edges(
         "classify_intent",

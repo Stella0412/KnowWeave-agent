@@ -16,6 +16,8 @@ class ConversationState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     user_id: str
     conversation_id: int
+    turn_user_msg_id: int | None
+    context_meta: dict
 
     resolved_query: str | None
     coref_source: str | None
@@ -62,3 +64,8 @@ class GraphContext:
     coref_model: Any = None
     expansion_model: Any = None
     intent_mode: str = "accuracy"
+    context_manager: Any = None
+    counter: Any = None
+    budget: Any = None
+    tool_result_max_tokens: int = 1200
+    settings: Any = None
