@@ -25,9 +25,10 @@ from app.prompts.orchestrator import (
 )
 from app.services.context_service import ContextStore
 from app.services.refund_policy import check_refund_eligibility
+from app.services.token_counter import TokenCounter, text_of
 from app.tools.business import REFUND_REASON_CATEGORIES
 from app.tools.executor import execute_tool
-from app.tools.registry import build_tools, tool_timeout
+from app.tools.registry import allowed_tool_names, build_tools, tool_timeout
 
 logger = logging.getLogger("knowweave.turn")
 
@@ -88,14 +89,7 @@ async def agent_llm(state, runtime):
     context = runtime.context
     route = state.get("route") or "business"
     intent = state.get("intent")
-    tools = build_tools(
-        context.session_factory,
-        state["conversation_id"],
-        context.turn,
-        include_faq=(route in {"business", "clarify"}),
-        include_lookup=(route != "refund_flow"),
-        include_refund=(route == "refund_flow" and intent == "refund_return"),
-    )
+    tools = build_tools(context.session_factory, state["conversation_id"], context.turn)
     system = SystemMessage(
         content=build_agent_system_prompt(
             route, state.get("evidence"),
@@ -223,38 +217,71 @@ async def agent_tools(state, runtime):
     route = state.get("route") or "business"
     intent = state.get("intent")
     tools = build_tools(
-        context.session_factory,
-        state["conversation_id"],
-        context.turn,
-        include_faq=(route in {"business", "clarify"}),
-        include_lookup=(route != "refund_flow"),
-        include_refund=(route == "refund_flow" and intent == "refund_return"),
+        context.session_factory, state["conversation_id"], context.turn
     )
     by_name = {tool.name: tool for tool in tools}
+    allowed = allowed_tool_names(route, intent)
     actions = list(state.get("suggested_actions") or [])
     last = state["messages"][-1]
-    tool_messages = []
+    calls = list(getattr(last, "tool_calls", None) or [])
+    counter = getattr(context, "counter", None) or TokenCounter()
+    budget = int(getattr(context, "tool_result_max_tokens", 1200))
+    results: list[ToolMessage | None] = [None] * len(calls)
+    to_execute: list[int] = []
+    special_tokens = 0
     refund_offered = bool(state.get("refund_offered"))
 
-    for call in getattr(last, "tool_calls", None) or []:
-        if call.get("name") == "create_ticket":
-            tool_messages.append(
-                _intercept_create_ticket(call, by_name, actions, intent=state.get("intent"))
+    for index, call in enumerate(calls):
+        name = call.get("name", "")
+        call_id = call.get("id", "")
+        if name not in allowed:
+            message = ToolMessage(
+                content=f"本轮不允许调用 {name}", tool_call_id=call_id, name=name
             )
+            results[index] = message
+            special_tokens += counter.count_message(message)
+            logger.info(json.dumps({
+                "event": "tool_blocked", "conversation_id": state.get("conversation_id"),
+                "route": route, "intent": intent, "tool": name,
+            }, ensure_ascii=False))
             continue
-        if call.get("name") == "submit_refund":
+        if name == "create_ticket":
+            message = _intercept_create_ticket(call, by_name, actions, intent=intent)
+        elif name == "submit_refund":
             message, offered = _intercept_submit_refund(call, by_name, actions, state)
-            tool_messages.append(message)
             refund_offered = refund_offered or offered
+        else:
+            to_execute.append(index)
             continue
-        tool_messages.append(
-            await execute_tool(
-                call,
-                by_name,
-                timeout=tool_timeout(call["name"], context.tool_timeout),
-                retries=context.tool_retries,
-            )
+        results[index] = message
+        special_tokens += counter.count_message(message)
+
+    remaining = max(0, budget - special_tokens)
+    share = remaining // len(to_execute) if to_execute else 0
+    for index in to_execute:
+        call = calls[index]
+        message = await execute_tool(
+            call,
+            by_name,
+            timeout=tool_timeout(call.get("name", ""), context.tool_timeout),
+            retries=context.tool_retries,
         )
+        if counter.count_message(message) > share:
+            overhead = (
+                4
+                + counter.count_text(message.name or "")
+                + counter.count_text(message.tool_call_id or "")
+            )
+            content = counter.truncate_text(
+                text_of(message.content), max(0, share - overhead), "…（工具结果已截断）"
+            )
+            message = message.model_copy(update={"content": content})
+            logger.info(json.dumps({
+                "event": "tool_result_truncated",
+                "conversation_id": state.get("conversation_id"),
+                "tool": call.get("name", ""), "cap": share,
+            }, ensure_ascii=False))
+        results[index] = message
 
     citations = list(state.get("citations") or [])
     for citation in context.turn.citations:
@@ -262,7 +289,7 @@ async def agent_tools(state, runtime):
             citations.append(citation)
 
     return {
-        "messages": tool_messages,
+        "messages": [message for message in results if message is not None],
         "suggested_actions": actions,
         "citations": citations,
         "refund_offered": refund_offered,

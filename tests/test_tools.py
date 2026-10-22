@@ -74,18 +74,12 @@ async def test_create_ticket_record_can_skip_escalation(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_build_tools_default_has_five_tools(session_factory):
+async def test_build_tools_has_six_tools_in_static_order(session_factory):
     tools = build_tools(session_factory, 1)
     assert [t.name for t in tools] == [
-        "query_order", "query_product", "query_logistics", "query_faq", "create_ticket",
+        "query_order", "query_product", "query_logistics",
+        "query_faq", "submit_refund", "create_ticket",
     ]
-
-
-@pytest.mark.asyncio
-async def test_build_tools_can_exclude_faq(session_factory):
-    tools = build_tools(session_factory, 1, include_faq=False)
-    names = [t.name for t in tools]
-    assert names == ["query_order", "query_product", "query_logistics", "create_ticket"]
 
 
 def test_tool_timeout_gives_query_faq_a_longer_budget(monkeypatch):

@@ -99,7 +99,7 @@ def _state(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_refund_agent_binds_only_refund_tools(session_factory):
+async def test_refund_agent_binds_full_fixed_tool_set(session_factory):
     model = FakeAgent()
     runtime = SimpleNamespace(
         context=SimpleNamespace(
@@ -112,10 +112,10 @@ async def test_refund_agent_binds_only_refund_tools(session_factory):
         )
     )
     await agent_llm(_state(), runtime)
-    assert "submit_refund" in model.bound
-    assert "create_ticket" in model.bound
-    assert "query_order" not in model.bound
-    assert "query_faq" not in model.bound
+    assert model.bound == [
+        "query_order", "query_product", "query_logistics",
+        "query_faq", "submit_refund", "create_ticket",
+    ]
 
 
 def test_refund_prompt_contains_order_and_policy():
@@ -192,7 +192,7 @@ def test_after_sale_prompt_uses_after_sale_addendum():
 
 
 @pytest.mark.asyncio
-async def test_after_sale_agent_does_not_bind_submit_refund(session_factory):
+async def test_after_sale_agent_binds_full_fixed_tool_set(session_factory):
     model = FakeAgent()
     runtime = SimpleNamespace(
         context=SimpleNamespace(
@@ -205,10 +205,10 @@ async def test_after_sale_agent_does_not_bind_submit_refund(session_factory):
         )
     )
     await agent_llm(_state(intent="after_sale"), runtime)
-    assert "submit_refund" not in model.bound
-    assert "create_ticket" in model.bound
-    assert "query_order" not in model.bound
-    assert "query_faq" not in model.bound
+    assert model.bound == [
+        "query_order", "query_product", "query_logistics",
+        "query_faq", "submit_refund", "create_ticket",
+    ]
 
 
 @pytest.mark.asyncio

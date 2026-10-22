@@ -106,20 +106,16 @@ async def test_agent_llm_keeps_answer_none_when_tool_calls():
 
 
 @pytest.mark.asyncio
-async def test_knowledge_route_excludes_query_faq(monkeypatch):
-    captured = {}
-
-    def fake_build_tools(
-        session_factory, conversation_id, turn=None,
-        *, include_faq=True, include_lookup=True, include_refund=False,
-    ):
-        captured["include_faq"] = include_faq
-        return []
-
-    monkeypatch.setattr(agent_module, "build_tools", fake_build_tools)
+async def test_agent_llm_binds_full_tool_set_on_knowledge_route():
+    # 绑定不再按路由裁剪：固定 6 个工具逐字稳定，路由差异只由执行端白名单决定。
+    model = FakeAgentModel(AIMessage(content="直接回答"))
     runtime = _runtime()
+    runtime.context.model = model
     await agent_llm(_state(route="knowledge", evidence="[1] 证据"), runtime)
-    assert captured["include_faq"] is False
+    assert model.bound_tools == [
+        "query_order", "query_product", "query_logistics",
+        "query_faq", "submit_refund", "create_ticket",
+    ]
 
 
 @pytest.mark.asyncio
