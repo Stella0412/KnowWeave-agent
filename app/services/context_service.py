@@ -1,5 +1,5 @@
 import tiktoken
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 
 
 class ContextStore:
@@ -24,5 +24,9 @@ class ContextStore:
             len(history) > 1
             and self.count_tokens([system_message] + history) > self._token_budget
         ):
+            history.pop(0)
+        # 逐条从头部删可能把带 tool_calls 的 AIMessage 删掉、却留下它的 ToolMessage。
+        # 上游会把孤立的 tool 消息当成协议错误（400），所以把失去配对的头部 tool 消息一起删掉。
+        while history and isinstance(history[0], ToolMessage):
             history.pop(0)
         return history
