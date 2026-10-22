@@ -904,7 +904,7 @@
     modal.className = 'ticket-modal';
     modal.innerHTML = `
       <h3>提交退款单</h3>
-      <label>订单号<input id="refundOrder" value="${draft.order_no || ''}" readonly></label>
+      <label>订单号<input id="refundOrder" readonly></label>
       <label>退款原因
         <select id="refundReason"><option value="">请选择</option>${options}</select>
       </label>
@@ -919,6 +919,8 @@
     mask.appendChild(modal);
     document.body.appendChild(mask);
     refundModal = mask;
+    // 订单号来自后端 DB，但仍按纯文本写入，避免拼进 innerHTML。
+    modal.querySelector('#refundOrder').value = draft.order_no || '';
     const close = () => closeRefundModal();
     modal.querySelector('#refundCancel').addEventListener('click', close);
     mask.addEventListener('click', (e) => { if (e.target === mask) close(); });

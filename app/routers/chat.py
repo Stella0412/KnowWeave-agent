@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent, format_sse_event
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.core.llm import build_chat_model, build_structured_model
@@ -99,20 +100,30 @@ async def refund(req: RefundRequest) -> dict:
         conversation_id = int(req.session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="session_id 必须是数字") from exc
-    async with SessionFactory() as session:
-        conv = await ChatRepository(session).get_conversation(conversation_id)
-        order = await OrderRepository(session).get(req.order_no)
-        if conv is None or order is None or order.user_id != conv.user_id:
-            raise HTTPException(status_code=404, detail="会话或订单不存在")
-        repo = RefundRepository(session)
-        existing = await repo.get_pending(conversation_id, req.order_no)
-        if existing is not None:
-            return {"refund_no": existing.refund_no}
-        row = await repo.create(
-            conversation_id, req.order_no, req.reason_category, req.note
-        )
-        await session.commit()
-        return {"refund_no": row.refund_no}
+    # 并发重复提交：先锁订单行，再做「查 pending → 建单」；refund_no 撞号时重试。
+    for attempt in range(3):
+        async with SessionFactory() as session:
+            conv = await ChatRepository(session).get_conversation(conversation_id)
+            order = await OrderRepository(session).get(req.order_no, for_update=True)
+            if conv is None or order is None or order.user_id != conv.user_id:
+                raise HTTPException(status_code=404, detail="会话或订单不存在")
+            repo = RefundRepository(session)
+            existing = await repo.get_pending(conversation_id, req.order_no)
+            if existing is not None:
+                return {"refund_no": existing.refund_no}
+            try:
+                row = await repo.create(
+                    conversation_id, req.order_no, req.reason_category, req.note
+                )
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                if attempt == 2:
+                    raise HTTPException(
+                        status_code=409, detail="退款单创建冲突，请稍后重试"
+                    ) from None
+                continue
+            return {"refund_no": row.refund_no}
 
 
 @router.post("/ticket")

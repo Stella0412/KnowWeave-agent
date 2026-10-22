@@ -16,3 +16,9 @@ def test_frontend_has_order_cards_and_refund_form():
         "refundReason",
     ]:
         assert marker in html, marker
+
+
+def test_refund_modal_sets_order_number_without_html_interpolation():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    assert 'value="${draft.order_no' not in html
+    assert "querySelector('#refundOrder').value = draft.order_no" in html

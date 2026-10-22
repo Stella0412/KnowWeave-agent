@@ -4,9 +4,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import RefundRequest
-from app.db.repository import ChatRepository
+from app.db.repository import ChatRepository, RefundRepository
 from app.db.seed import seed_orders
 from app.routers import chat as chat_module
 
@@ -139,3 +140,46 @@ async def test_refund_returns_existing_pending_without_duplicate(
     async with session_factory() as session:
         rows = list((await session.execute(select(RefundRequest))).scalars())
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_refund_retries_once_on_refund_no_collision(monkeypatch, session_factory):
+    """并发建单时 refund_no 可能撞号；撞号后应重试而不是 500。"""
+    await seed_orders(session_factory)
+    async with session_factory() as session:
+        conversation_id = await ChatRepository(session).create_conversation()
+        await session.commit()
+    monkeypatch.setattr(chat_module, "SessionFactory", session_factory)
+
+    original = RefundRepository.create
+    calls = {"n": 0}
+
+    async def flaky_create(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("INSERT refund_requests", {}, Exception("duplicate"))
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(RefundRepository, "create", flaky_create)
+    resp = await _post("/chat/refund", {
+        "session_id": str(conversation_id),
+        "order_no": "1001",
+        "reason_category": "七天无理由",
+    })
+
+    assert resp.status_code == 200
+    assert calls["n"] == 2
+    async with session_factory() as session:
+        rows = list((await session.execute(select(RefundRequest))).scalars())
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_refund_rejects_overlong_note():
+    resp = await _post("/chat/refund", {
+        "session_id": "1",
+        "order_no": "1001",
+        "reason_category": "七天无理由",
+        "note": "x" * 501,
+    })
+    assert resp.status_code == 422

@@ -401,8 +401,16 @@ class OrderRepository:
         )
         return list(result.scalars())
 
-    async def get(self, order_no: str) -> Order | None:
-        return await self._session.get(Order, (order_no or "").strip())
+    async def get(self, order_no: str, *, for_update: bool = False) -> Order | None:
+        """按订单号取单。`for_update=True` 在支持行锁的库上锁住该行，
+        用于「查 pending → 建退款单」这类读后写流程，避免并发下重复建单。"""
+        key = (order_no or "").strip()
+        if not for_update:
+            return await self._session.get(Order, key)
+        result = await self._session.execute(
+            select(Order).where(Order.order_no == key).with_for_update()
+        )
+        return result.scalars().first()
 
 
 class RefundRepository:

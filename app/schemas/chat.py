@@ -15,4 +15,4 @@ class RefundRequest(BaseModel):
     session_id: str
     order_no: str = Field(..., min_length=1)
     reason_category: str
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=500)

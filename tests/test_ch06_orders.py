@@ -20,6 +20,15 @@ async def test_seed_orders_is_idempotent_and_relative(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_order_get_for_update_returns_row(session_factory):
+    await seed_orders(session_factory)
+    async with session_factory() as session:
+        order = await OrderRepository(session).get("1001", for_update=True)
+    assert order is not None
+    assert order.product_name == "猫爬架"
+
+
+@pytest.mark.asyncio
 async def test_query_order_reads_table_and_reports_missing(session_factory):
     await seed_orders(session_factory)
     tool = build_query_order(session_factory)
