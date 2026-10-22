@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graph.agent import agent_llm, agent_tools, build_agent_system_prompt
 from app.tools.business import REFUND_REASON_CATEGORIES
@@ -79,6 +79,45 @@ def test_refund_prompt_contains_order_and_policy():
     assert "猫爬架" in text
     assert "七天无理由" in text
     assert "不要追问退款原因" in text
+
+
+def test_logistics_prompt_forbids_refund_arrival_reading():
+    # 「那大概什么时候能到」紧跟在退款答复后，但本轮 intent 已被消解成物流；
+    # 通用 business 提示不够，模型会答成「退款到账时间」。
+    text = build_agent_system_prompt("business", None, intent="logistics")
+    assert "物流查询" in text
+    assert "不是退款到账时间" in text
+    assert "重新调用 query_logistics" in text
+
+
+@pytest.mark.asyncio
+async def test_agent_llm_sends_resolved_query_instead_of_ambiguous_followup(session_factory):
+    # 指代消解在 coref 节点做完了，agent 看到的却还是原话「那大概什么时候能到」，
+    # 紧邻的退款回答会把「到」带偏。发给模型的本轮用户消息必须是消解后的完整问句。
+    model = FakeAgent()
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(
+            model=model,
+            session_factory=session_factory,
+            token_budget=4096,
+            tool_timeout=5.0,
+            tool_retries=1,
+            turn=SimpleNamespace(citations=[]),
+        )
+    )
+    raw = HumanMessage(content="那大概什么时候能到")
+    state = _state(
+        intent="logistics",
+        route="business",
+        resolved_query="订单1001的物流单号SF1001CN大概什么时候能到",
+        order_data=None,
+        evidence=None,
+        messages=[raw],
+    )
+    await agent_llm(state, runtime)
+    assert model.calls[0][-1].content == "订单1001的物流单号SF1001CN大概什么时候能到"
+    # 只改发给模型的副本，状态/落库里的用户原话不能被改写
+    assert raw.content == "那大概什么时候能到"
 
 
 def test_after_sale_prompt_uses_after_sale_addendum():

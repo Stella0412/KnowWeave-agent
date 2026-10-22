@@ -155,6 +155,13 @@ AGENT_SYSTEM_ADDENDUM_BUSINESS = """【本轮是业务数据类问题】
 - 需要人工介入时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。
 - 普通咨询不要建议转人工。"""
 
+AGENT_SYSTEM_ADDENDUM_LOGISTICS = """【本轮是物流查询】
+- 用户问的是包裹什么时候送到，不是退款到账时间；不要答退款到账。
+- 本轮必须重新调用 query_logistics 取最新节点（历史里查过也要再查）；只有订单号时先 query_order 拿物流单号。
+- 只依据本轮工具返回的节点回答；不要复述历史里的物流结果当最新结果，也不要承诺具体送达时间。
+- 需要人工介入时调用 create_ticket；普通咨询不要建议转人工。"""
+
+
 AGENT_SYSTEM_ADDENDUM_REFUND = """【本轮是退款判定】
 - 订单数据和退款政策证据已经备齐；不要再调用 query_order / query_faq。
 - 只判断「这一单能不能退」，依据必须是订单字段与政策证据。

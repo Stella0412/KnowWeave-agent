@@ -7,7 +7,12 @@
 import json
 import logging
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from app.prompts.customer_service import SYSTEM_PROMPT
 from app.prompts.orchestrator import (
@@ -15,6 +20,7 @@ from app.prompts.orchestrator import (
     AGENT_SYSTEM_ADDENDUM_BUSINESS,
     AGENT_SYSTEM_ADDENDUM_CLARIFY,
     AGENT_SYSTEM_ADDENDUM_KNOWLEDGE,
+    AGENT_SYSTEM_ADDENDUM_LOGISTICS,
     AGENT_SYSTEM_ADDENDUM_REFUND,
 )
 from app.services.context_service import ContextStore
@@ -49,6 +55,9 @@ def build_agent_system_prompt(
             f"\n\n【本轮订单】\n{order_text}"
             f"\n\n【退款/售后政策证据】\n{evidence or '（无）'}"
         )
+    elif intent == "logistics":
+        addendum = AGENT_SYSTEM_ADDENDUM_LOGISTICS
+        block = ""
     else:
         addendum = AGENT_SYSTEM_ADDENDUM_BUSINESS
         block = ""
@@ -93,6 +102,12 @@ async def agent_llm(state, runtime):
         )
     )
     history = list(state.get("messages") or [])
+    # coref 已经把「那大概什么时候能到」补全成本轮真正的问题；模型看到的若还是原话，
+    # 紧邻的退款回答会把「到」带偏（答成退款到账时间）。只替换发给模型的最后一条用户消息，
+    # 状态和落库里的用户原话保持不变。
+    resolved = (state.get("resolved_query") or "").strip()
+    if resolved and history and isinstance(history[-1], HumanMessage):
+        history[-1] = history[-1].model_copy(update={"content": resolved})
     trimmed = ContextStore(context.token_budget).trim(system, history)
     ai = await context.model.bind_tools(tools).ainvoke([system] + trimmed)
     update = {
