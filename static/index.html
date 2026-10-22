@@ -27,14 +27,95 @@
     color: var(--ink);
   }
 
-  .app {
-    max-width: 760px;
+  .shell {
+    max-width: 1080px;
     height: 100vh;
     margin: 0 auto;
     display: flex;
-    flex-direction: column;
     background: var(--panel);
     box-shadow: 0 0 40px rgba(255, 111, 60, 0.08);
+  }
+  .sidebar {
+    width: 252px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: #fffdfa;
+  }
+  .sidebar-head {
+    padding: 16px 14px 10px;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .conversation-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+  .conversation-item {
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    background: transparent;
+    border-radius: 10px;
+    padding: 9px 10px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  .conversation-item:hover { background: #fff2ea; }
+  .conversation-item.active { background: #fff1e6; border-color: #ffd7bf; }
+  .conversation-item:disabled { opacity: .55; cursor: default; }
+  .conv-preview {
+    display: block; font-size: 13px; line-height: 1.4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .conv-meta {
+    display: flex; gap: 6px; margin-top: 4px;
+    font-size: 11px; color: var(--muted);
+  }
+  .conv-badge {
+    color: var(--brand); border: 1px solid #ffd7bf;
+    border-radius: 8px; padding: 0 5px;
+  }
+  .sidebar-toggle { display: none; }
+  .sidebar-backdrop { display: none; }
+  @media (max-width: 720px) {
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 252px;
+      z-index: 30;
+      transform: translateX(-105%);
+      transition: transform .2s ease;
+      box-shadow: 8px 0 24px rgba(0, 0, 0, .12);
+    }
+    .sidebar.open { transform: none; }
+    .sidebar-toggle {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 8px;
+      padding: 5px 9px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .sidebar-backdrop.show {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, .25);
+      z-index: 20;
+    }
+  }
+  .app {
+    flex: 1;
+    min-width: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
   }
 
   /* 顶栏 */
@@ -403,27 +484,38 @@
 </style>
 </head>
 <body>
-  <div class="app">
-    <header class="header">
-      <div class="brand">
-        <div class="avatar">🐱</div>
-        <div>
-          <h1>知序智能客服</h1>
-          <p class="status"><span class="dot"></span>在线 · 纯对话体验版</p>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <span>历史会话</span>
+        <span id="sidebarStatus"></span>
+      </div>
+      <div class="conversation-list" id="conversationList"></div>
+    </aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+    <div class="app">
+      <header class="header">
+        <button class="sidebar-toggle" id="btnSidebar" type="button">会话</button>
+        <div class="brand">
+          <div class="avatar">🐱</div>
+          <div>
+            <h1>知序智能客服</h1>
+            <p class="status"><span class="dot"></span>在线 · 纯对话体验版</p>
+          </div>
         </div>
-      </div>
-      <div class="header-actions">
-        <a class="btn-new" href="/rag-eval">评估面板</a>
-        <button class="btn-new" id="btnNew">新对话</button>
-      </div>
-    </header>
+        <div class="header-actions">
+          <a class="btn-new" href="/rag-eval">评估面板</a>
+          <button class="btn-new" id="btnNew">新对话</button>
+        </div>
+      </header>
 
-    <main class="chat" id="chat"></main>
+      <main class="chat" id="chat"></main>
 
-    <footer class="composer">
-      <textarea id="input" rows="1" placeholder="请输入您的问题，回车发送（Shift+回车换行）"></textarea>
-      <button id="send">发送</button>
-    </footer>
+      <footer class="composer">
+        <textarea id="input" rows="1" placeholder="请输入您的问题，回车发送（Shift+回车换行）"></textarea>
+        <button id="send">发送</button>
+      </footer>
+    </div>
   </div>
 
 <script>
@@ -441,6 +533,11 @@
   const inputEl = document.getElementById('input');
   const sendEl = document.getElementById('send');
   const btnNew = document.getElementById('btnNew');
+  const conversationListEl = document.getElementById('conversationList');
+  const sidebarStatusEl = document.getElementById('sidebarStatus');
+  const sidebarEl = document.getElementById('sidebar');
+  const sidebarBackdropEl = document.getElementById('sidebarBackdrop');
+  const btnSidebar = document.getElementById('btnSidebar');
 
   function uuid() {
     if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -453,6 +550,7 @@
 
   let sessionId = null;
   let sending = false;
+  let conversations = [];
 
   function scrollToBottom() {
     chatEl.scrollTop = chatEl.scrollHeight;
@@ -585,6 +683,11 @@
     sending = v;
     inputEl.disabled = v;
     sendEl.disabled = v;
+    conversationListEl.querySelectorAll('button').forEach((button) => {
+      button.disabled = v;
+    });
+    btnNew.disabled = v;
+    btnSidebar.disabled = v;
     if (!v) inputEl.focus();
   }
 
@@ -593,12 +696,95 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
   }
 
+  function closeSidebar() {
+    sidebarEl.classList.remove('open');
+    sidebarBackdropEl.classList.remove('show');
+  }
+
+  function openSidebar() {
+    sidebarEl.classList.add('open');
+    sidebarBackdropEl.classList.add('show');
+  }
+
+  async function loadConversations() {
+    try {
+      const resp = await fetch('/api/conversations');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      conversations = data.conversations || [];
+      sidebarStatusEl.textContent = '';
+      renderConversationList();
+    } catch (e) {
+      sidebarStatusEl.textContent = '会话列表暂不可用';
+    }
+  }
+
+  function renderConversationList() {
+    conversationListEl.innerHTML = '';
+    for (const c of conversations) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'conversation-item' + (
+        sessionId !== null && String(c.id) === String(sessionId) ? ' active' : ''
+      );
+      item.disabled = sending;
+      const preview = document.createElement('span');
+      preview.className = 'conv-preview';
+      preview.textContent = c.preview || '（空会话）';
+      const meta = document.createElement('span');
+      meta.className = 'conv-meta';
+      const time = document.createElement('span');
+      time.textContent = c.updated_at ? new Date(c.updated_at).toLocaleString() : '';
+      meta.appendChild(time);
+      if (c.summarized) {
+        const badge = document.createElement('span');
+        badge.className = 'conv-badge';
+        badge.textContent = '已摘要';
+        meta.appendChild(badge);
+      }
+      item.appendChild(preview);
+      item.appendChild(meta);
+      item.addEventListener('click', () => openConversation(c.id));
+      conversationListEl.appendChild(item);
+    }
+  }
+
+  function appendSystemNotice(text) {
+    const notice = document.createElement('div');
+    notice.className = 'system-notice';
+    notice.textContent = text;
+    chatEl.appendChild(notice);
+    scrollToBottom();
+  }
+
+  async function openConversation(id) {
+    if (sending) return;
+    try {
+      const resp = await fetch('/api/conversations/' + id + '/messages');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      sessionId = id;
+      closeTicketModal();
+      closeRefundModal();
+      chatEl.innerHTML = '';
+      for (const message of data.messages || []) {
+        if (message.role === 'user') addUserMessage(message.content || '');
+        else addAssistantMessage(message.content || '');
+      }
+      closeSidebar();
+      renderConversationList();
+    } catch (e) {
+      appendSystemNotice('历史会话加载失败，请稍后重试。');
+    }
+  }
+
   function reset() {
     sessionId = null;
     closeTicketModal();
     closeRefundModal();
     chatEl.innerHTML = '';
     addAssistantMessage('您好，我是知序客服知序～有什么可以帮您的吗？订单、物流、售后问题都可以问我哦。');
+    renderConversationList();
   }
 
   // 解析单行 SSE 事件（形如 `data: {...}`）
@@ -612,6 +798,7 @@
     switch (ev.type) {
       case 'session':
         sessionId = ev.session_id;
+        loadConversations();
         break;
       case 'tool_status': {
         const merged = mergeToolBadge(ctx.toolNames, ev.name);
@@ -641,6 +828,7 @@
         break;
       case 'done':
         finalizeAssistant(bubbleEl, ctx);
+        refreshAfterDone();
         break;
     }
   }
@@ -780,6 +968,11 @@
     attachFeedback(bubbleEl);
     renderActions(bubbleEl, ctx.actions);
     scrollToBottom();
+  }
+
+  function refreshAfterDone() {
+    loadConversations();
+    setTimeout(loadConversations, 1500);
   }
 
   // ---- ch05 动作按钮：转人工纯前端；建工单走弹窗 + 端点 ----
@@ -1132,7 +1325,11 @@
   chatEl.addEventListener('scroll', closeCitation, { passive: true });
   window.addEventListener('resize', closeCitation);
 
+  btnSidebar.addEventListener('click', openSidebar);
+  sidebarBackdropEl.addEventListener('click', closeSidebar);
+
   reset();
+  loadConversations();
 })();
 </script>
 </body>
