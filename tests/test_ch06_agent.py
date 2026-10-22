@@ -81,6 +81,18 @@ def test_refund_prompt_contains_order_and_policy():
     assert "不要追问退款原因" in text
 
 
+def test_refund_prompt_requires_fresh_form_on_later_request():
+    # 上一轮已经生成过表单时，模型会读到历史里的「不要再次调用 submit_refund」，
+    # 下一轮用户再说「我要退款」就只复述「表单刚才已生成」，前端拿不到新的表单动作。
+    text = build_agent_system_prompt(
+        "refund_flow", "[1] 七天无理由",
+        intent="refund_return", order_data={"order_no": "1001", "product_name": "猫爬架"},
+    )
+    assert "不会留到本轮" in text
+    assert "再次要求退款" in text
+    assert "必须重新调用 submit_refund" in text
+
+
 def test_logistics_prompt_forbids_refund_arrival_reading():
     # 「那大概什么时候能到」紧跟在退款答复后，但本轮 intent 已被消解成物流；
     # 通用 business 提示不够，模型会答成「退款到账时间」。
@@ -180,6 +192,23 @@ async def test_submit_refund_intercept_adds_form(session_factory):
     assert action["draft"]["order_no"] == "1001"
     assert tuple(action["draft"]["reason_options"]) == REFUND_REASON_CATEGORIES
     assert update["refund_offered"] is True
+
+
+@pytest.mark.asyncio
+async def test_refund_tool_message_scopes_repeat_call_to_current_turn(session_factory):
+    state = _state(
+        messages=[AIMessage(content="", tool_calls=[{
+            "name": "submit_refund", "args": {"order_no": "1001"},
+            "id": "c1", "type": "tool_call",
+        }])]
+    )
+    update = await agent_tools(state, _runtime(session_factory))
+    content = update["messages"][0].content
+    # 「不要再次调用」只能约束本轮；否则这条工具消息落库后，
+    # 下一轮用户再要求退款时模型会以为表单还在，不再调用 submit_refund。
+    assert "本轮" in content
+    assert "用户下一轮再次要求退款" in content
+    assert "必须重新调用 submit_refund" in content
 
 
 @pytest.mark.asyncio

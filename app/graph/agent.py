@@ -187,7 +187,12 @@ def _intercept_submit_refund(tool_call, tools_by_name, actions, state):
     if action not in actions:
         actions.append(action)
     return ToolMessage(
-        content="退款表单选项已呈现给用户，请简要说明并停止，不要再次调用 submit_refund。",
+        # 这条消息会随历史落库。「不要再次调用」若不限定本轮，下一轮用户再要求退款时
+        # 模型会以为表单还在，既不调用工具、前端也就拿不到新的 refund_form 动作。
+        content=(
+            "本轮退款表单已呈现给用户，请简要说明并停止，本轮不要再次调用 submit_refund。"
+            "用户下一轮再次要求退款时，表单不会保留，必须重新调用 submit_refund。"
+        ),
         tool_call_id=call_id, name="submit_refund",
     ), True
 
