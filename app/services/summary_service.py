@@ -149,6 +149,7 @@ class SummaryService:
             else AIMessage(content=row.content or "", id=f"db:{row.id}")
             for row in rows
             if frozen.from_msg_id <= row.id <= frozen.upto_msg_id
+            and row.role.value in ("user", "assistant")
         ]
         return fallback, "mysql"
 

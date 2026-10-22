@@ -145,3 +145,22 @@ async def test_in_flight_single_flight(session_factory):
     assert await service.schedule(cid, SummaryRange(1, 2, None)) is True
     assert await service.schedule(cid, SummaryRange(1, 2, None)) is False
     await service.wait_for_idle()
+
+
+@pytest.mark.asyncio
+async def test_fallback_skips_tool_rows(session_factory):
+    cid = await _conversation(session_factory)
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        await repo.add_message(cid, role="user", content="用户问题")
+        await repo.add_message(cid, role="assistant", content="客服回答")
+        await repo.add_message(cid, role="tool", content="工具结果")
+        await session.commit()
+    model = FakeModel()
+    service = _service(session_factory, FakeGraph([]), model)
+    await service.schedule(cid, SummaryRange(1, 3, None))
+    await service.wait_for_idle()
+    transcript = model.seen[0][1].content
+    assert "用户问题" in transcript
+    assert "客服回答" in transcript
+    assert "工具" not in transcript
