@@ -21,7 +21,7 @@ def test_ch07_config_defaults():
     assert s.classifier_history_max_tokens == 1200
     assert s.layer2_assistant_prefix_chars == 60
     assert s.order_json_max_tokens == 600
-    assert s.cjk_tokens_per_char == 1.0
+    assert s.cjk_tokens_per_char == 0.6
     assert s.token_estimate_factor == 1.15
     assert s.summary_input_max_tokens == 6000
     assert s.summary_message_max_tokens == 800

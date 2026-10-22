@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     classifier_history_max_tokens: int = 1200
     layer2_assistant_prefix_chars: int = 60
     order_json_max_tokens: int = 600
-    cjk_tokens_per_char: float = 1.0
+    cjk_tokens_per_char: float = 0.6
     token_estimate_factor: float = 1.15
     summary_input_max_tokens: int = 6000
     summary_message_max_tokens: int = 800

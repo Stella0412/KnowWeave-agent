@@ -92,7 +92,11 @@ async def agent_llm(state, runtime):
         sent.append(HumanMessage(content=current_text, id=getattr(current, "id", None)))
     sent.extend(react)
 
-    estimated_tokens = counter.count_messages(sent)
+    schemas = [convert_to_openai_tool(tool) for tool in tools]
+    schema_text = json.dumps(schemas, ensure_ascii=False, sort_keys=True)
+    estimated_messages_tokens = counter.count_messages(sent)
+    estimated_tool_tokens = counter.count_text(schema_text)
+    estimated_tokens = estimated_messages_tokens + estimated_tool_tokens
     context_logger.info(json.dumps({
         "event": "model_ctx",
         "conversation_id": state.get("conversation_id"),
@@ -102,9 +106,11 @@ async def agent_llm(state, runtime):
         "summary_segments": meta.get("summary_segments", []),
         "messages": [serialize_message(m) for m in sent],
         "window_count": len(sent),
-        "estimated_tokens": estimated_tokens,
+        "estimated_tokens": estimated_messages_tokens,
+        "estimated_tool_tokens": estimated_tool_tokens,
+        "estimated_total_tokens": estimated_tokens,
         "tools": [tool.name for tool in tools],
-        "tool_schemas": [convert_to_openai_tool(tool) for tool in tools],
+        "tool_schemas": schemas,
         "budget": getattr(getattr(context, "budget", None), "as_dict", lambda: {})() if getattr(context, "budget", None) else {},
         "anchors": {
             "summary_upto": meta.get("summary_upto"),
@@ -121,6 +127,8 @@ async def agent_llm(state, runtime):
             "event": "model_usage",
             "conversation_id": state.get("conversation_id"),
             "step": int(state.get("steps", 0)) + 1,
+            "estimated_messages_tokens": estimated_messages_tokens,
+            "estimated_tool_tokens": estimated_tool_tokens,
             "estimated_tokens": estimated_tokens,
             "actual_tokens": actual_tokens,
             "ratio": round(actual_tokens / max(1, estimated_tokens), 3),

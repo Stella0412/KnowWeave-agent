@@ -30,7 +30,7 @@ def text_of(content) -> str:
 class TokenCounter:
     """CJK 按字符计，非 CJK 走 cl100k_base，最后统一乘估算系数。"""
 
-    def __init__(self, *, cjk_tokens_per_char: float = 1.0, estimate_factor: float = 1.15):
+    def __init__(self, *, cjk_tokens_per_char: float = 0.6, estimate_factor: float = 1.15):
         self.cjk_tokens_per_char = float(cjk_tokens_per_char)
         self.estimate_factor = float(estimate_factor)
         self._enc = tiktoken.get_encoding("cl100k_base")
