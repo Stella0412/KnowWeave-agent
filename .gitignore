@@ -19,6 +19,7 @@ data/*
 
 # 运行日志（本地跑 uvicorn 时产生）
 *.log
+log/
 
 # IDE
 .idea/
