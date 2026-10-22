@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -11,14 +12,18 @@ _MAX_BYTES = 10 * 1024 * 1024
 _BACKUP_COUNT = 3
 
 
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
 def configure_context_logging(log_file: str, *, logger_name: str = "knowweave.context"):
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    target = str(Path(log_file).resolve())
+    target = _norm(log_file)
     has_file = any(
         isinstance(handler, RotatingFileHandler)
-        and getattr(handler, "baseFilename", None) == target
+        and _norm(getattr(handler, "baseFilename", "") or "") == target
         for handler in logger.handlers
     )
     if not has_file:
