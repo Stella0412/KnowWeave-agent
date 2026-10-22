@@ -89,6 +89,31 @@ async def test_layer2_over_budget_schedules_frozen_summary(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_demotion_keeps_layer2_chronological_and_frozen_range_ordered(session_factory):
+    cid = await _conversation(session_factory)
+    counter = _counter()
+    messages = (
+        _turn(1, "旧问题" * 20, "旧回答" * 20)
+        + _turn(2, "中间问题" * 20, "中间回答" * 20)
+        + _turn(3, "近问题" * 20, "近回答" * 20)
+        + _turn(4, "当前问题", "")
+    )
+    # layer1 预算只够放最新一轮，迫使同一 prepare 内连续降级两整轮（1、2）进 layer2。
+    newest_turn_tokens = counter.count_messages(_turn(3, "近问题" * 20, "近回答" * 20))
+    summary = FakeSummary()
+    manager = _manager(session_factory, _budget(layer1=newest_turn_tokens, layer2=1), summary)
+    meta = await manager.prepare(cid, messages, current_user_msg_id=4)
+    assert meta["demoted"] is True
+    assert meta["summary_triggered"] is True
+    assert len(summary.calls) == 1
+    _, frozen = summary.calls[0]
+    # 降级后的 layer2 必须保持时间升序：from 是最早降级轮、upto 是最新降级轮，区间不倒置。
+    assert frozen.from_msg_id == 1
+    assert frozen.upto_msg_id == 2
+    assert frozen.from_msg_id < frozen.upto_msg_id
+
+
+@pytest.mark.asyncio
 async def test_effective_summary_uses_segments_and_selects_first_plus_recent(session_factory):
     cid = await _conversation(session_factory)
     async with session_factory() as session:

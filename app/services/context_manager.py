@@ -208,7 +208,7 @@ class ContextManager:
         demoted_count = 0
         while layer1_tokens > self._budget.layer1 and len(layer1) > 1:
             moved = layer1.pop(0)
-            layer2.insert(0, moved)
+            layer2.append(moved)
             demoted_count += 1
             layer1_tokens = self._counter.count_messages(self._flatten(layer1))
         if layer1_tokens > self._budget.layer1:

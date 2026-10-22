@@ -17,17 +17,27 @@ LOG_PATH = Path("log/app.log")
 
 
 def _events():
-    if not LOG_PATH.exists():
-        return []
+    """读取当前日志及轮转备份（.1/.2/.3），解析全部 JSON 事件。"""
+    paths = [LOG_PATH]
+    for suffix in (".1", ".2", ".3"):
+        rotated = Path(str(LOG_PATH) + suffix)
+        if rotated.exists():
+            paths.append(rotated)
     items = []
-    for line in LOG_PATH.read_text(encoding="utf-8", errors="ignore").splitlines():
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            items.append(payload)
+    for path in paths:
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                items.append(payload)
     return items
+
+
+def _events_for(session_id: int):
+    """按本轮会话 id 过滤事件，避免 10MB 日志轮转把事件拆到备份文件后漏判。"""
+    return [e for e in _events() if e.get("conversation_id") == session_id]
 
 
 def _pad(text: str, min_chars: int) -> str:
@@ -48,7 +58,6 @@ async def _ask(client, base_url, session_id, message):
 
 async def run(mode: str, turns: int, base_url: str) -> int:
     async with httpx.AsyncClient(timeout=120.0) as client:
-        before = len(_events())
         session_id = None
         # 默认每轮控制在约 1000 token，留出 assistant 开销后仍 <= 1200；
         # 演示每轮更长，确保 20 轮内出现级联。
@@ -61,8 +70,8 @@ async def run(mode: str, turns: int, base_url: str) -> int:
                 f"turn {index + 1}: session={session_id} "
                 f"interrupted={payload.get('interrupted')}"
             )
+        events = _events_for(int(session_id))
         if mode == "default":
-            events = _events()[before:]
             demoted = [e for e in events if e.get("event") == "layer1 降级"]
             triggered = [e for e in events if e.get("event") == "summary trigger"]
             assert not demoted, f"默认 20 轮不应降级: {demoted[:1]}"
@@ -70,7 +79,6 @@ async def run(mode: str, turns: int, base_url: str) -> int:
             print("PASS 默认配置：20 轮无降级、无摘要")
             return 0
 
-        events = _events()[before:]
         demoted = [e for e in events if e.get("event") == "layer1 降级"]
         triggered = [e for e in events if e.get("event") == "summary trigger"]
         done = [e for e in events if e.get("event") == "summary done"]
