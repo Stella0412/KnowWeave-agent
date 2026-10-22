@@ -132,8 +132,9 @@ async def test_refund_fetch_order_uses_order_number_from_resolved_query(
             "user_id": "anonymous",
             "intent": "refund_return",
             "messages": [
-                HumanMessage(content="订单1001的猫爬架什么时候到"),
-                AIMessage(content="您的猫爬架预计明天送达"),
+                # 历史里是另一张有效订单，resolved_query 优先，不能被历史覆盖。
+                HumanMessage(content="订单1002的猫窝什么时候到"),
+                AIMessage(content="您的猫窝预计明天送达"),
                 HumanMessage(content="我要退款"),
             ],
             "flow_steps": [],
@@ -143,6 +144,40 @@ async def test_refund_fetch_order_uses_order_number_from_resolved_query(
     )
     assert seen == []
     assert update["order_no"] == "1001"
+    assert update["flow_steps"] == ["fetch_order"]
+
+
+@pytest.mark.asyncio
+async def test_refund_fetch_order_does_not_fall_back_to_history_when_resolved_number_is_unknown(
+    monkeypatch, session_factory
+):
+    """resolved_query 里的号码不在订单表时，必须让用户重选，不能翻历史挑旧订单。"""
+    await seed_orders(session_factory)
+    seen = []
+
+    def fake_interrupt(payload):
+        seen.append(payload)
+        return {"order_no": "1002"}
+
+    monkeypatch.setattr(nodes, "interrupt", fake_interrupt)
+    update = await nodes.refund_fetch_order(
+        {
+            "resolved_query": "订单9999能退吗",
+            "user_id": "anonymous",
+            "intent": "refund_return",
+            "messages": [
+                HumanMessage(content="订单1001的猫爬架什么时候到"),
+                AIMessage(content="您的猫爬架预计明天送达"),
+                HumanMessage(content="这个能退吗"),
+            ],
+            "flow_steps": [],
+            "trace": {},
+        },
+        _runtime(session_factory),
+    )
+    assert len(seen) == 1
+    assert seen[0]["kind"] == "select_order"
+    assert update["order_no"] == "1002"
     assert update["flow_steps"] == ["fetch_order"]
 
 
