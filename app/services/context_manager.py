@@ -180,6 +180,7 @@ class ContextManager:
             summary_upto = max_upto
 
         layer1_from = conv.layer1_from_msg_id
+        stored_layer1_from = layer1_from
         turns = split_turns(messages)
         anchored = [t.first_user_msg_id for t in turns if t.first_user_msg_id is not None]
         if layer1_from is None:
@@ -216,7 +217,9 @@ class ContextManager:
         new_layer1_from = (
             layer1[0].first_user_msg_id if layer1 else current_user_msg_id
         )
-        if layer1_from is None or new_layer1_from != layer1_from:
+        # 用库里的原始值比较：R12 首次把 NULL 初始化成实际锚点也要落库（无降级日志），
+        # 不能和已在内存中更新过的 layer1_from 比较，否则 NULL 会一直拖到首次降级才写。
+        if stored_layer1_from is None or new_layer1_from != stored_layer1_from:
             async with self._session_factory() as session:
                 repo = ChatRepository(session)
                 row = await repo.get_conversation_for_update(conversation_id)
@@ -443,5 +446,22 @@ class ContextManager:
             last_human = next(
                 (m for m in reversed(prefix) if isinstance(m, HumanMessage)), None
             )
-            trimmed = [last_human] if last_human is not None else [prefix[-1]]
+            fallback = last_human if last_human is not None else prefix[-1]
+            trimmed = [self._cap_message(fallback)]
         return trimmed
+
+    def _cap_message(self, message: BaseMessage) -> BaseMessage:
+        """把单条消息截到 classifier_history_max_tokens 预算内（含协议开销）。"""
+        max_tokens = self._settings.classifier_history_max_tokens
+        if self._counter.count_message(message) <= max_tokens:
+            return message
+        text = text_of(getattr(message, "content", ""))
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            candidate = message.model_copy(update={"content": text[:mid]})
+            if self._counter.count_message(candidate) <= max_tokens:
+                lo = mid
+            else:
+                hi = mid - 1
+        return message.model_copy(update={"content": text[:lo]})

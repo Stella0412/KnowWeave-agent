@@ -152,3 +152,30 @@ async def test_shared_history_starts_on_human_and_respects_budget(session_factor
     assert current.content == "当前问题"
     assert react == []
     assert all(not isinstance(m, HumanMessage) or m.content != "当前问题" for m in prefix)
+
+
+@pytest.mark.asyncio
+async def test_shared_history_fallback_caps_single_long_message(session_factory):
+    cid = await _conversation(session_factory)
+    counter = _counter()
+    manager = _manager(session_factory, _budget())
+    messages = _turn(1, "旧问题" * 30, "旧回答" * 30) + _turn(2, "当前问题", "")
+    meta = await manager.prepare(cid, messages, current_user_msg_id=2)
+    history = manager.shared_history(messages, meta)
+    assert history
+    assert isinstance(history[0], HumanMessage)
+    assert counter.count_messages(history) <= 80
+
+
+@pytest.mark.asyncio
+async def test_prepare_persists_initialized_anchor_without_demotion(session_factory):
+    cid = await _conversation(session_factory)
+    manager = _manager(session_factory, _budget())
+    meta = await manager.prepare(
+        cid, _turn(1, "问", "答") + _turn(2, "当前", ""), current_user_msg_id=2
+    )
+    async with session_factory() as session:
+        conv = await ChatRepository(session).get_conversation(cid)
+    assert conv.layer1_from_msg_id == 1
+    assert meta["layer1_from"] == 1
+    assert meta["demoted"] is False
