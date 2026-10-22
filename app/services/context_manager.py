@@ -14,9 +14,12 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from app.db.repository import ChatRepository
-from app.services.token_counter import TokenCounter, text_of
+from app.prompts.customer_service import SYSTEM_PROMPT
+from app.services.token_counter import TokenCounter, compute_budget, text_of
+from app.tools.registry import build_tools
 
 logger = logging.getLogger("knowweave.context")
 
@@ -465,3 +468,33 @@ class ContextManager:
             else:
                 hi = mid - 1
         return message.model_copy(update={"content": text[:lo]})
+
+
+def measure_system_prefix(counter: TokenCounter, session_factory=None) -> int:
+    tools = build_tools(session_factory, 0)
+    schemas = [convert_to_openai_tool(tool) for tool in tools]
+    schema_text = json.dumps(schemas, ensure_ascii=False, sort_keys=True)
+    return counter.count_text(SYSTEM_PROMPT) + counter.count_text(schema_text)
+
+
+def log_startup_budget(logger, settings, counter: TokenCounter):
+    budget = compute_budget(settings)
+    prefix_tokens = measure_system_prefix(counter, session_factory=None)
+    if prefix_tokens > settings.system_prefix_reserve_tokens:
+        raise RuntimeError(
+            f"系统前缀超出预算：{prefix_tokens} > {settings.system_prefix_reserve_tokens}"
+        )
+    logger.info(json.dumps({
+        "event": "context_budget",
+        **budget.as_dict(),
+        "system_prefix_tokens": prefix_tokens,
+        "components": {
+            "system_prefix_reserve": settings.system_prefix_reserve_tokens,
+            "evidence": settings.rerank_top_n * settings.evidence_tokens_per_chunk,
+            "summary_inject": settings.summary_inject_max_tokens,
+            "output": settings.max_output_tokens,
+            "user_input": settings.max_user_input_tokens,
+            "safety": settings.context_safety_margin_tokens,
+        },
+    }, ensure_ascii=False))
+    return budget

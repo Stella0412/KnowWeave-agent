@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from app.config import Settings, settings
+from app.core.logging import configure_context_logging
 from app.db.base import Base
 from app.db.engine import SessionFactory, engine
 from app.db.seed import seed_orders
@@ -13,6 +14,8 @@ from app.graph.build import build_graph
 from app.graph.runtime import open_checkpointer
 from app.routers import chat, extract, rag_eval
 from app.services.chat_service import build_chat_service
+from app.services.context_manager import log_startup_budget
+from app.services.token_counter import TokenCounter
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -34,6 +37,12 @@ def validate_config(s: Settings | None = None) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_config()
+    context_logger = configure_context_logging(settings.log_file)
+    counter = TokenCounter(
+        cjk_tokens_per_char=settings.cjk_tokens_per_char,
+        estimate_factor=settings.token_estimate_factor,
+    )
+    log_startup_budget(context_logger, settings, counter)
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
