@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -40,7 +41,13 @@ def _state(**overrides):
         "intent": "refund_return",
         "route": "refund_flow",
         "order_no": "1001",
-        "order_data": {"order_no": "1001", "product_name": "猫爬架"},
+        "order_data": {
+            "order_no": "1001",
+            "product_name": "猫爬架",
+            "status": "已签收",
+            "product_type": "普通",
+            "signed_at": (datetime.now() - timedelta(days=3)).isoformat(),
+        },
         "evidence": "[1] 七天无理由",
         "steps": 0,
         "tokens_used": 0,
@@ -79,6 +86,8 @@ def test_refund_prompt_contains_order_and_policy():
     assert "猫爬架" in text
     assert "七天无理由" in text
     assert "不要追问退款原因" in text
+    assert "普通商品" in text
+    assert "定制类、生鲜类" in text
 
 
 def test_refund_prompt_requires_fresh_form_on_later_request():
@@ -192,6 +201,30 @@ async def test_submit_refund_intercept_adds_form(session_factory):
     assert action["draft"]["order_no"] == "1001"
     assert tuple(action["draft"]["reason_options"]) == REFUND_REASON_CATEGORIES
     assert update["refund_offered"] is True
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_intercept_blocks_ineligible_order(session_factory):
+    # 模型偶尔会误判；定制类订单即使模型调了 submit_refund，也不能出现可填写的表单。
+    signed = (datetime.now() - timedelta(days=3)).isoformat()
+    state = _state(
+        order_no="1002",
+        order_data={
+            "order_no": "1002",
+            "product_name": "定制猫窝",
+            "status": "已签收",
+            "product_type": "定制",
+            "signed_at": signed,
+        },
+        messages=[AIMessage(content="", tool_calls=[{
+            "name": "submit_refund", "args": {"order_no": "1002"},
+            "id": "c1", "type": "tool_call",
+        }])],
+    )
+    update = await agent_tools(state, _runtime(session_factory))
+    assert update["suggested_actions"] == []
+    assert update["refund_offered"] is False
+    assert "定制" in update["messages"][0].content
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from app.db.repository import ChatRepository, OrderRepository, RefundRepository
 from app.prompts.orchestrator import CorefOutput, ExpansionOutput, IntentOutput
 from app.schemas.chat import ChatRequest, RefundRequest, ResumeRequest
 from app.services.chat_service import ChatService
+from app.services.refund_policy import check_refund_eligibility
 from app.tools.business import REFUND_REASON_CATEGORIES, create_ticket_record
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -107,6 +108,11 @@ async def refund(req: RefundRequest) -> dict:
             order = await OrderRepository(session).get(req.order_no, for_update=True)
             if conv is None or order is None or order.user_id != conv.user_id:
                 raise HTTPException(status_code=404, detail="会话或订单不存在")
+            eligible, reason = check_refund_eligibility(order)
+            if not eligible:
+                raise HTTPException(
+                    status_code=400, detail=f"该订单不能提交退款申请：{reason}"
+                )
             repo = RefundRepository(session)
             existing = await repo.get_pending(conversation_id, req.order_no)
             if existing is not None:

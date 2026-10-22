@@ -24,6 +24,7 @@ from app.prompts.orchestrator import (
     AGENT_SYSTEM_ADDENDUM_REFUND,
 )
 from app.services.context_service import ContextStore
+from app.services.refund_policy import check_refund_eligibility
 from app.tools.business import REFUND_REASON_CATEGORIES
 from app.tools.executor import execute_tool
 from app.tools.registry import build_tools, tool_timeout
@@ -175,6 +176,13 @@ def _intercept_submit_refund(tool_call, tools_by_name, actions, state):
             tool_call_id=call_id, name="submit_refund",
         ), False
     order = state.get("order_data") or {}
+    # 模型判断可能出错（例如把定制类当成普通商品）；表单只对确定能无理由退货的订单生成。
+    eligible, reason = check_refund_eligibility(order)
+    if not eligible:
+        return ToolMessage(
+            content=f"该订单不能生成退款表单：{reason}。不要调用 submit_refund，请向用户说明原因。",
+            tool_call_id=call_id, name="submit_refund",
+        ), False
     action = {
         "type": "refund_form",
         "label": "提交退款单",

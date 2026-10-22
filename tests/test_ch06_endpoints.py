@@ -120,6 +120,26 @@ async def test_refund_rejects_unknown_order(monkeypatch, session_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("order_no", ["1002", "1003", "1004", "1005"])
+async def test_refund_rejects_ineligible_order(
+    monkeypatch, session_factory, order_no
+):
+    # 定制/生鲜/未签收/已取消的订单不能提交退款申请；前端即使被绕过也要挡住。
+    await seed_orders(session_factory)
+    async with session_factory() as session:
+        conversation_id = await ChatRepository(session).create_conversation()
+        await session.commit()
+    monkeypatch.setattr(chat_module, "SessionFactory", session_factory)
+    resp = await _post("/chat/refund", {
+        "session_id": str(conversation_id),
+        "order_no": order_no,
+        "reason_category": "七天无理由",
+    })
+    assert resp.status_code == 400
+    assert "不能提交退款申请" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_refund_returns_existing_pending_without_duplicate(
     monkeypatch, session_factory
 ):
