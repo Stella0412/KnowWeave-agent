@@ -67,11 +67,16 @@ async def prepare_context(state, runtime):
 
 async def classify_intent(state, runtime):
     question = state.get("resolved_query") or _last_user_text(state.get("messages", []))
-    messages = list(state.get("messages") or [])
-    history = messages[:-1][-6:] if messages and isinstance(messages[-1], HumanMessage) else messages[-6:]
+    meta = state.get("context_meta") or {}
+    manager = getattr(runtime.context, "context_manager", None)
+    if manager is not None and meta:
+        history = manager.shared_history(state.get("messages", []), meta)
+    else:
+        messages = list(state.get("messages") or [])
+        history = messages[:-1][-6:] if messages and isinstance(messages[-1], HumanMessage) else messages[-6:]
     try:
         result = await runtime.context.intent_model.ainvoke(
-            intent_messages(question, history)
+            intent_messages(question, history, meta.get("summary_text", ""))
         )
         intent = getattr(result, "intent", None)
         confidence = float(getattr(result, "confidence", None))
@@ -102,12 +107,19 @@ async def coref(state, runtime):
     current = _last_user_text(messages)
     if not current:
         return {"resolved_query": "", "coref_source": "passthrough"}
-    history = messages[:-1][-8:] if messages and isinstance(messages[-1], HumanMessage) else messages[-8:]
+    meta = state.get("context_meta") or {}
+    manager = getattr(runtime.context, "context_manager", None)
+    if manager is not None and meta:
+        history = manager.shared_history(messages, meta)
+    else:
+        history = messages[:-1][-8:] if messages and isinstance(messages[-1], HumanMessage) else messages[-8:]
     model = getattr(runtime.context, "coref_model", None)
     if model is None:
         return {"resolved_query": current, "coref_source": "passthrough"}
     try:
-        result = await model.ainvoke(coref_messages(history, current))
+        result = await model.ainvoke(
+            coref_messages(history, current, meta.get("summary_text", ""))
+        )
         resolved = (getattr(result, "resolved_query", "") or "").strip()
         if not resolved:
             raise ValueError("resolved_query 为空")

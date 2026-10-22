@@ -123,7 +123,7 @@ async def test_kg_question_forced_rag_then_agent(monkeypatch, session_factory):
     assert state["trace"]["forced_rag"] is True
     assert state["answer"] == "按证据回答"
     assert agent.calls == 1
-    assert "7 天无理由退货" in agent.seen[0][0].content
+    assert "7 天无理由退货" in agent.seen[0][-1].content
     assert agent.bound_tools == [
         "query_order", "query_product", "query_logistics",
         "query_faq", "submit_refund", "create_ticket",

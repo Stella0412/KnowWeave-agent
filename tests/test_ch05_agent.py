@@ -6,9 +6,11 @@ from langchain_core.tools import tool
 
 import app.graph.agent as agent_module
 from app.db.repository import ChatRepository
-from app.graph.agent import agent_llm, agent_tools, build_agent_system_prompt
+from app.graph.agent import agent_llm, agent_tools
 from app.graph.routing import make_should_continue
+from app.prompts.context import build_dynamic_block
 from app.rag.pipeline import TurnContext
+from app.services.token_counter import TokenCounter
 
 
 class FakeBound:
@@ -43,6 +45,11 @@ def _runtime(session_factory=None, raw_question="订单1001到哪了"):
             token_budget=4096,
             tool_timeout=5.0,
             tool_retries=1,
+            counter=TokenCounter(estimate_factor=1.0),
+            tool_result_max_tokens=1200,
+            context_manager=None,
+            budget=None,
+            settings=None,
         )
     )
 
@@ -70,11 +77,19 @@ def test_should_continue_prefers_convergence_then_max_steps():
     assert should({"steps": 1, "messages": [AIMessage(content="", tool_calls=[call])]}) == "tools"
 
 
-def test_agent_system_prompt_includes_evidence_and_route_rules():
-    knowledge = build_agent_system_prompt("knowledge", "[1] 7 天无理由退货")
+def test_dynamic_block_includes_evidence_and_route_rules():
+    knowledge = build_dynamic_block(
+        route="knowledge", intent=None, summary="", evidence="[1] 7 天无理由退货",
+        order_data=None, counter=TokenCounter(estimate_factor=1.0),
+        evidence_budget_tokens=1000, order_max_tokens=600,
+    )
     assert "7 天无理由退货" in knowledge
     assert "不要再调用 query_faq" in knowledge
-    business = build_agent_system_prompt("business", None)
+    business = build_dynamic_block(
+        route="business", intent=None, summary="", evidence=None,
+        order_data=None, counter=TokenCounter(estimate_factor=1.0),
+        evidence_budget_tokens=1000, order_max_tokens=600,
+    )
     assert "先调用 query_order 拿到物流单号" in business
 
 
@@ -193,7 +208,7 @@ async def test_agent_tools_dedupes_ticket_actions(session_factory):
 @pytest.mark.asyncio
 async def test_agent_tools_keeps_existing_citations(session_factory, monkeypatch):
     @tool
-    async def query_probe(keyword: str) -> str:
+    async def query_order(order_id: str) -> str:
         """探测工具。"""
         return "ok"
 
@@ -201,13 +216,13 @@ async def test_agent_tools_keeps_existing_citations(session_factory, monkeypatch
     runtime.context.turn.citations.append({"n": 1, "chunk_id": 7})
 
     def fake_build_tools(*args, **kwargs):
-        return [query_probe]
+        return [query_order]
 
     monkeypatch.setattr(agent_module, "build_tools", fake_build_tools)
     state = _state(
         route="business",
         messages=[HumanMessage(content="查"), AIMessage(content="", tool_calls=[
-            {"name": "query_probe", "args": {"keyword": "x"}, "id": "c1", "type": "tool_call"}
+            {"name": "query_order", "args": {"order_id": "1"}, "id": "c1", "type": "tool_call"}
         ])],
         citations=[{"n": 2, "chunk_id": 9}],
     )

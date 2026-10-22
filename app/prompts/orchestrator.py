@@ -43,8 +43,8 @@ confidence 口径：明确 0.9+；边界 0.6~0.8；拿不准 <0.6 并优先 othe
 禁止把超出范围或拿不准的问题硬塞进七类业务意图。"""
 
 
-def intent_messages(question: str, history=None) -> list:
-    history_text = _history_text(history) if history else ""
+def intent_messages(question: str, history=None, summary: str = "") -> list:
+    history_text = _history_text(history, summary) if history or summary else ""
     prefix = f"【最近对话】\n{history_text}\n\n" if history_text else ""
     return [
         SystemMessage(content=INTENT_SYSTEM),
@@ -80,8 +80,10 @@ COREF_SYSTEM = """你是电商客服的指代消解器。只输出 resolved_quer
 → resolved_query：订单1001的退款多久到账"""
 
 
-def _history_text(history) -> str:
+def _history_text(history, summary: str = "") -> str:
     lines = []
+    if summary:
+        lines.append(f"【历史梗概】{summary}")
     for message in history or []:
         role = "用户" if isinstance(message, HumanMessage) else "客服"
         text = message.content if isinstance(message.content, str) else str(message.content or "")
@@ -90,8 +92,8 @@ def _history_text(history) -> str:
     return "\n".join(lines)
 
 
-def coref_messages(history, current: str) -> list:
-    history_text = _history_text(history) or "（无历史）"
+def coref_messages(history, current: str, summary: str = "") -> list:
+    history_text = _history_text(history, summary) or "（无历史）"
     return [
         SystemMessage(content=COREF_SYSTEM),
         HumanMessage(

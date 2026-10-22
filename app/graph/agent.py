@@ -13,17 +13,11 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
+from app.prompts.context import build_dynamic_block
 from app.prompts.customer_service import SYSTEM_PROMPT
-from app.prompts.orchestrator import (
-    AGENT_SYSTEM_ADDENDUM_AFTER_SALE,
-    AGENT_SYSTEM_ADDENDUM_BUSINESS,
-    AGENT_SYSTEM_ADDENDUM_CLARIFY,
-    AGENT_SYSTEM_ADDENDUM_KNOWLEDGE,
-    AGENT_SYSTEM_ADDENDUM_LOGISTICS,
-    AGENT_SYSTEM_ADDENDUM_REFUND,
-)
-from app.services.context_service import ContextStore
+from app.services.context_manager import serialize_message, split_turns
 from app.services.refund_policy import check_refund_eligibility
 from app.services.token_counter import TokenCounter, text_of
 from app.tools.business import REFUND_REASON_CATEGORIES
@@ -31,39 +25,7 @@ from app.tools.executor import execute_tool
 from app.tools.registry import allowed_tool_names, build_tools, tool_timeout
 
 logger = logging.getLogger("knowweave.turn")
-
-
-def build_agent_system_prompt(
-    route: str,
-    evidence: str | None,
-    *,
-    intent: str | None = None,
-    order_data: dict | None = None,
-) -> str:
-    if route == "knowledge":
-        addendum = AGENT_SYSTEM_ADDENDUM_KNOWLEDGE
-        block = f"\n\n【本轮强制检索证据】\n{evidence or '（无）'}"
-    elif route == "clarify":
-        addendum = AGENT_SYSTEM_ADDENDUM_CLARIFY
-        block = ""
-    elif route == "refund_flow":
-        addendum = (
-            AGENT_SYSTEM_ADDENDUM_REFUND
-            if intent == "refund_return"
-            else AGENT_SYSTEM_ADDENDUM_AFTER_SALE
-        )
-        order_text = json.dumps(order_data or {}, ensure_ascii=False, default=str)
-        block = (
-            f"\n\n【本轮订单】\n{order_text}"
-            f"\n\n【退款/售后政策证据】\n{evidence or '（无）'}"
-        )
-    elif intent == "logistics":
-        addendum = AGENT_SYSTEM_ADDENDUM_LOGISTICS
-        block = ""
-    else:
-        addendum = AGENT_SYSTEM_ADDENDUM_BUSINESS
-        block = ""
-    return f"{SYSTEM_PROMPT}\n\n{addendum}{block}"
+context_logger = logging.getLogger("knowweave.context")
 
 
 def _usage_tokens(ai: AIMessage) -> int:
@@ -71,53 +33,98 @@ def _usage_tokens(ai: AIMessage) -> int:
     return int(usage.get("total_tokens") or 0)
 
 
-def _text_of(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "".join(parts)
-    return str(content or "")
-
-
 async def agent_llm(state, runtime):
     context = runtime.context
     route = state.get("route") or "business"
     intent = state.get("intent")
     tools = build_tools(context.session_factory, state["conversation_id"], context.turn)
-    system = SystemMessage(
-        content=build_agent_system_prompt(
-            route, state.get("evidence"),
-            intent=state.get("intent"), order_data=state.get("order_data"),
-        )
-    )
-    history = list(state.get("messages") or [])
-    if route == "refund_flow":
-        # 指代已经消解、订单和政策已经确定；旧轮次的订单/表单结论不能参与本轮判定。
-        # 保留当前轮次的完整 ReAct 工具配对，避免第二次推理丢失工具结果。
-        history = history[int(state.get("turn_msg_offset", 0)):]
-    # coref 已经把「那大概什么时候能到」补全成本轮真正的问题；模型看到的若还是原话，
-    # 紧邻的退款回答会把「到」带偏（答成退款到账时间）。只替换发给模型的最后一条用户消息，
-    # 状态和落库里的用户原话保持不变。
+    messages = list(state.get("messages") or [])
+    meta = state.get("context_meta") or {}
+    manager = getattr(context, "context_manager", None)
+    if manager is not None and meta:
+        prefix, current, react = manager.model_history(messages, meta)
+    else:
+        turns = split_turns(messages)
+        current_turn = turns[-1] if turns else None
+        prefix = [m for turn in turns[:-1] for m in turn.messages]
+        current = current_turn.messages[0] if current_turn and current_turn.messages else None
+        react = current_turn.messages[1:] if current_turn else []
+        if not meta:
+            context_logger.warning(json.dumps({
+                "event": "context_meta_missing",
+                "conversation_id": state.get("conversation_id"),
+            }, ensure_ascii=False))
+
+    # coref 已经把「那大概什么时候能到」补全成本轮真正的问题；发给模型的本轮用户消息
+    # 必须是消解后的完整问句，状态/落库里的用户原话保持不变。
     resolved = (state.get("resolved_query") or "").strip()
-    for index in range(len(history) - 1, -1, -1):
-        if not isinstance(history[index], HumanMessage):
-            continue
-        current = resolved or _text_of(history[index].content)
-        if route == "refund_flow" and state.get("order_no"):
-            current += (
-                f"\n【本轮已确认订单】{state['order_no']}。"
-                "请仅处理这张订单，以系统提供的本轮订单数据为准。"
-            )
-        history[index] = history[index].model_copy(update={"content": current})
-        break
-    trimmed = ContextStore(context.token_budget).trim(system, history)
-    ai = await context.model.bind_tools(tools).ainvoke([system] + trimmed)
+    current_text = resolved or text_of(getattr(current, "content", ""))
+    if route == "refund_flow" and state.get("order_no"):
+        current_text += (
+            f"\n【本轮已确认订单】{state['order_no']}。"
+            "请仅处理这张订单，以系统提供的本轮订单数据为准。"
+        )
+    counter = getattr(context, "counter", None) or TokenCounter()
+    context_settings = getattr(context, "settings", None)
+    dynamic = build_dynamic_block(
+        route=route,
+        intent=intent,
+        summary=meta.get("summary_text", ""),
+        evidence=state.get("evidence"),
+        order_data=state.get("order_data"),
+        counter=counter,
+        evidence_budget_tokens=(
+            context_settings.rerank_top_n * context_settings.evidence_tokens_per_chunk
+            if context_settings is not None
+            else 10 * 200
+        ),
+        order_max_tokens=(
+            context_settings.order_json_max_tokens
+            if context_settings is not None
+            else 600
+        ),
+    )
+    if dynamic:
+        current_text += "\n\n" + dynamic
+
+    sent = [SystemMessage(content=SYSTEM_PROMPT)] + prefix
+    if current is not None:
+        sent.append(HumanMessage(content=current_text, id=getattr(current, "id", None)))
+    sent.extend(react)
+
+    estimated_tokens = counter.count_messages(sent)
+    context_logger.info(json.dumps({
+        "event": "model_ctx",
+        "conversation_id": state.get("conversation_id"),
+        "step": int(state.get("steps", 0)) + 1,
+        "system": SYSTEM_PROMPT,
+        "summary": meta.get("summary_text", ""),
+        "summary_segments": meta.get("summary_segments", []),
+        "messages": [serialize_message(m) for m in sent],
+        "window_count": len(sent),
+        "estimated_tokens": estimated_tokens,
+        "tools": [tool.name for tool in tools],
+        "tool_schemas": [convert_to_openai_tool(tool) for tool in tools],
+        "budget": getattr(getattr(context, "budget", None), "as_dict", lambda: {})() if getattr(context, "budget", None) else {},
+        "anchors": {
+            "summary_upto": meta.get("summary_upto"),
+            "layer1_from": meta.get("layer1_from"),
+        },
+        "route": route,
+        "intent": intent,
+    }, ensure_ascii=False))
+
+    ai = await context.model.bind_tools(tools).ainvoke(sent)
+    actual_tokens = _usage_tokens(ai)
+    if actual_tokens:
+        context_logger.info(json.dumps({
+            "event": "model_usage",
+            "conversation_id": state.get("conversation_id"),
+            "step": int(state.get("steps", 0)) + 1,
+            "estimated_tokens": estimated_tokens,
+            "actual_tokens": actual_tokens,
+            "ratio": round(actual_tokens / max(1, estimated_tokens), 3),
+        }, ensure_ascii=False))
     update = {
         "messages": [ai],
         "steps": int(state.get("steps", 0)) + 1,
@@ -126,7 +133,7 @@ async def agent_llm(state, runtime):
         "answer": None,
     }
     if not ai.tool_calls:
-        update["answer"] = _text_of(ai.content)
+        update["answer"] = text_of(ai.content)
         update["stop_reason"] = "no_tool_calls"
     return update
 
