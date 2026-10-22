@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     # ch04 混合检索与重排（spec §4）
     recall_top_k: int = 50          # 每路召回条数
     rrf_k: int = 60                 # RRF 平滑常数
-    rerank_top_n: int = 10          # 精排后进 prompt 的条数
+    rerank_top_n: int = Field(
+        10, validation_alias=AliasChoices("RERANK_TOP_K", "rerank_top_n")
+    )  # 精排后进 prompt 的条数；RERANK_TOP_K 优先
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     # 留空即复用 embed_base_url / embed_api_key（沿用仓库既有命名约定，故给 alias）
     rerank_base_url: str = Field(
@@ -82,6 +84,31 @@ class Settings(BaseSettings):
     # 建库 / 挖知识
     kb_docs_dir: str = "data/kb"
     mine_batch_size: int = 20
+
+    # ch07 上下文管理
+    model_context_window: int = 64000
+    max_output_tokens: int = 2000
+    max_user_input_tokens: int = 2000
+    tool_result_max_tokens: int = 1200
+    system_prefix_reserve_tokens: int = 1500
+    evidence_tokens_per_chunk: int = 200
+    summary_inject_max_tokens: int = 1000
+    context_safety_margin_tokens: int = 1250
+    context_target_rounds: int = 20
+    layer1_share: float = 0.7
+    steady_turn_tokens: int = 1200
+    classifier_history_max_tokens: int = 1200
+    layer2_assistant_prefix_chars: int = 60
+    order_json_max_tokens: int = 600
+    cjk_tokens_per_char: float = 1.0
+    token_estimate_factor: float = 1.15
+    summary_input_max_tokens: int = 6000
+    summary_message_max_tokens: int = 800
+    summary_tool_result_max_tokens: int = 400
+    summary_max_chars: int = 200
+    summary_max_output_tokens: int = 400
+    summary_retry_cooldown_seconds: int = 60
+    log_file: str = "log/app.log"
 
 
 settings = Settings()

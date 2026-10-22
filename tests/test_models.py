@@ -27,6 +27,7 @@ def test_tables_registered():
         "faith_cases",
         "orders",
         "refund_requests",
+        "conversation_summaries",
     }
 
 
