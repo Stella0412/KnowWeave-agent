@@ -15,10 +15,14 @@ from langchain_core.messages import (
 )
 from langgraph.types import Command
 
+from app.config import settings as default_settings
 from app.db.repository import ChatRepository, OrderRepository
 from app.graph.runtime import normalize_stream_event, thread_config
 from app.graph.state import GraphContext
 from app.rag.pipeline import TurnContext, default_source_files
+from app.services.context_manager import ContextManager
+from app.services.summary_service import SummaryService
+from app.services.token_counter import TokenCounter, compute_budget
 
 logger = logging.getLogger("knowweave.turn")
 
@@ -62,21 +66,13 @@ def _message_id(row) -> str:
     return f"db:{row.id}"
 
 
-def _row_to_message(row) -> BaseMessage:
-    kwargs = {"id": _message_id(row)}
+def _row_to_seed_message(row) -> BaseMessage | None:
     if row.role.value == "user":
-        return HumanMessage(content=row.content or "", **kwargs)
-    if row.role.value == "assistant":
-        return AIMessage(
-            content=row.content or "",
-            tool_calls=row.tool_calls or [],
-            **kwargs,
-        )
-    return ToolMessage(
-        content=row.content or "",
-        tool_call_id=row.tool_call_id or "",
-        **kwargs,
-    )
+        return HumanMessage(content=row.content or "", id=_message_id(row))
+    if row.role.value == "assistant" and (row.content or "").strip():
+        # 旧 assistant 的 tool_calls 不 seed：没有配对的 ToolMessage 会是协议错误
+        return AIMessage(content=row.content or "", id=_message_id(row))
+    return None
 
 
 def _text_of(content) -> str:
@@ -116,7 +112,17 @@ class ChatService:
         coref_model=None,
         expansion_model=None,
         intent_mode: str = "accuracy",
+        settings=None,
+        context_manager: ContextManager | None = None,
+        summary_service: SummaryService | None = None,
+        counter: TokenCounter | None = None,
     ):
+        self._settings = settings or default_settings
+        self._counter = counter or TokenCounter(
+            cjk_tokens_per_char=self._settings.cjk_tokens_per_char,
+            estimate_factor=self._settings.token_estimate_factor,
+        )
+        self._budget = compute_budget(self._settings)
         self._model = model
         self._intent_model = intent_model
         self._session_factory = session_factory
@@ -127,6 +133,8 @@ class ChatService:
         self._coref_model = coref_model
         self._expansion_model = expansion_model
         self._intent_mode = intent_mode
+        self._context_manager = context_manager
+        self._summary_service = summary_service
 
     def _context(self, turn: TurnContext) -> GraphContext:
         return GraphContext(
@@ -140,9 +148,22 @@ class ChatService:
             token_budget=self._token_budget,
             tool_timeout=self._tool_timeout,
             tool_retries=self._tool_retries,
+            context_manager=self._context_manager,
+            counter=self._counter,
+            budget=self._budget,
+            tool_result_max_tokens=self._settings.tool_result_max_tokens,
+            settings=self._settings,
         )
 
+    async def shutdown(self) -> None:
+        if self._summary_service is not None:
+            await self._summary_service.shutdown()
+
     async def _prepare(self, session_id: str | None, message: str) -> _Prepared:
+        if self._counter.count_text(message) > self._settings.max_user_input_tokens:
+            raise ValueError(
+                f"用户输入过长：超过 {self._settings.max_user_input_tokens} token 上限"
+            )
         async with self._session_factory() as session:
             repo = ChatRepository(session)
             if session_id is None:
@@ -155,6 +176,7 @@ class ChatService:
                 if await repo.get_conversation(conversation_id) is None:
                     raise ValueError("会话不存在")
             user_row = await repo.add_message(conversation_id, role="user", content=message)
+            await repo.touch_conversation(conversation_id)
             await session.commit()
             new_user_id = user_row.id
             rows = await repo.list_messages(conversation_id)
@@ -168,8 +190,12 @@ class ChatService:
             input_messages = []
             history_count = len(existing)
         else:
-            # checkpoint 为空时，历史来自 MySQL 的补种消息。
-            input_messages = [_row_to_message(row) for row in history_rows]
+            # checkpoint 为空时，历史来自 MySQL 的补种消息（只种 user/assistant，
+            # 且旧 assistant 的 tool_calls 一并丢弃，否则没有配对 ToolMessage 是协议错误）。
+            input_messages = [
+                seeded for row in history_rows
+                if (seeded := _row_to_seed_message(row)) is not None
+            ]
             history_count = len(input_messages)
         # 两种情况下都从这段历史之后开始算本轮：log_turn 用该偏移只统计本轮工具调用，
         # 落库也用它切出本轮新增消息，避免把历史重复写回 MySQL。
@@ -180,6 +206,8 @@ class ChatService:
             "messages": input_messages,
             "user_id": "anonymous",
             "conversation_id": conversation_id,
+            "turn_user_msg_id": new_user_id,
+            "context_meta": {},
             "intent": None,
             "intent_source": None,
             "route": None,
@@ -225,29 +253,21 @@ class ChatService:
         )
 
     async def _persist_new(self, conversation_id: int, state: dict, history_count: int) -> None:
-        messages = list(state.get("messages") or [])
-        new_messages = messages[history_count:]
+        new_messages = list(state.get("messages") or [])[history_count:]
         async with self._session_factory() as session:
             repo = ChatRepository(session)
             for message in new_messages:
-                if isinstance(message, HumanMessage):
+                if not isinstance(message, AIMessage):
                     continue
                 if str(getattr(message, "id", "") or "").startswith("db:"):
                     continue
-                if isinstance(message, AIMessage):
-                    await repo.add_message(
-                        conversation_id,
-                        role="assistant",
-                        content=_text_of(message.content),
-                        tool_calls=message.tool_calls or None,
-                    )
-                elif isinstance(message, ToolMessage):
-                    await repo.add_message(
-                        conversation_id,
-                        role="tool",
-                        content=_text_of(message.content),
-                        tool_call_id=message.tool_call_id,
-                    )
+                content = _text_of(message.content).strip()
+                if not content:
+                    continue
+                await repo.add_message(
+                    conversation_id, role="assistant", content=content,
+                )
+            await repo.touch_conversation(conversation_id)
             await session.commit()
 
     async def _events(self, graph_input, config, context):
@@ -460,3 +480,51 @@ def _messages_of(update):
     if not isinstance(update, dict):
         return []
     return [m for m in update.get("messages") or [] if isinstance(m, AIMessage)]
+
+
+def build_chat_service(graph, *, settings=None, session_factory):
+    from app.core.llm import build_chat_model, build_structured_model
+    from app.prompts.context import SummaryOutput
+    from app.prompts.orchestrator import CorefOutput, ExpansionOutput, IntentOutput
+
+    s = settings or default_settings
+    counter = TokenCounter(
+        cjk_tokens_per_char=s.cjk_tokens_per_char,
+        estimate_factor=s.token_estimate_factor,
+    )
+    budget = compute_budget(s)
+    summary_service = SummaryService(
+        session_factory,
+        build_structured_model(
+            s, SummaryOutput, temperature=0.0,
+            max_tokens=s.summary_max_output_tokens,
+        ),
+        graph,
+        counter,
+        s,
+    )
+    manager = ContextManager(
+        session_factory,
+        counter=counter,
+        budget=budget,
+        settings=s,
+        summary_service=summary_service,
+    )
+    return ChatService(
+        build_chat_model(s, max_tokens=s.max_output_tokens),
+        build_structured_model(
+            s, IntentOutput, temperature=0.0, model_name=s.intent_model or None,
+        ),
+        session_factory,
+        graph,
+        token_budget=s.token_budget,
+        tool_timeout=s.tool_timeout,
+        tool_retries=s.tool_retries,
+        coref_model=build_structured_model(s, CorefOutput, temperature=0.0),
+        expansion_model=build_structured_model(s, ExpansionOutput, temperature=0.0),
+        intent_mode=s.intent_mode,
+        settings=s,
+        context_manager=manager,
+        summary_service=summary_service,
+        counter=counter,
+    )

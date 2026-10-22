@@ -147,7 +147,7 @@ async def test_citations_and_actions_before_done(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_persists_tool_trace(session_factory):
+async def test_persists_only_user_and_text_assistant(session_factory):
     call = {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
     final = {
         "messages": [
@@ -165,9 +165,8 @@ async def test_persists_tool_trace(session_factory):
     cid = int(events[0]["session_id"])
     async with session_factory() as session:
         rows = await ChatRepository(session).list_messages(cid)
-    assert [r.role.value for r in rows] == ["user", "assistant", "tool", "assistant"]
-    assert rows[1].tool_calls[0]["name"] == "query_order"
-    assert rows[2].tool_call_id == "c1"
+    assert [r.role.value for r in rows] == ["user", "assistant"]
+    assert rows[1].content == "答"
 
 
 @pytest.mark.asyncio

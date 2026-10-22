@@ -7,20 +7,14 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent, format_sse_event
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
-from app.config import settings
-from app.core.llm import build_chat_model, build_structured_model
 from app.db.engine import SessionFactory
 from app.db.repository import ChatRepository, OrderRepository, RefundRepository
-from app.prompts.orchestrator import CorefOutput, ExpansionOutput, IntentOutput
 from app.schemas.chat import ChatRequest, RefundRequest, ResumeRequest
 from app.services.chat_service import ChatService
 from app.services.refund_policy import check_refund_eligibility
 from app.tools.business import REFUND_REASON_CATEGORIES, create_ticket_record
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-# 懒实例化：避免 import 时用空 key 构造 ChatOpenAI 报错（ch01 Risk A）。
-_chat_service: ChatService | None = None
 
 
 class TicketRequest(BaseModel):
@@ -30,27 +24,10 @@ class TicketRequest(BaseModel):
 
 
 def _get_chat_service(request: Request) -> ChatService:
-    global _chat_service
-    if _chat_service is None:
-        graph = getattr(request.app.state, "graph", None)
-        if graph is None:
-            raise RuntimeError("图未初始化：请通过 app.main lifespan 启动")
-        _chat_service = ChatService(
-            build_chat_model(settings),
-            build_structured_model(
-                settings, IntentOutput, temperature=0.0,
-                model_name=settings.intent_model or None,
-            ),
-            SessionFactory,
-            graph,
-            token_budget=settings.token_budget,
-            tool_timeout=settings.tool_timeout,
-            tool_retries=settings.tool_retries,
-            coref_model=build_structured_model(settings, CorefOutput, temperature=0.0),
-            expansion_model=build_structured_model(settings, ExpansionOutput, temperature=0.0),
-            intent_mode=settings.intent_mode,
-        )
-    return _chat_service
+    service = getattr(request.app.state, "chat_service", None)
+    if service is None:
+        raise RuntimeError("ChatService 未初始化：请通过 app.main lifespan 启动")
+    return service
 
 
 @router.post("", response_class=EventSourceResponse)

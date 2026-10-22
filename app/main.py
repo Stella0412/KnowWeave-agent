@@ -12,6 +12,7 @@ from app.db.seed import seed_orders
 from app.graph.build import build_graph
 from app.graph.runtime import open_checkpointer
 from app.routers import chat, extract, rag_eval
+from app.services.chat_service import build_chat_service
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -45,7 +46,13 @@ async def lifespan(app: FastAPI):
             checkpointer=saver,
             max_agent_steps=settings.max_agent_steps,
         )
-        yield
+        app.state.chat_service = build_chat_service(
+            app.state.graph, settings=settings, session_factory=SessionFactory,
+        )
+        try:
+            yield
+        finally:
+            await app.state.chat_service.shutdown()
 
 
 app = FastAPI(title="知序智能客服", lifespan=lifespan)
