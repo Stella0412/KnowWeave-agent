@@ -171,7 +171,13 @@ def run_expanded_pipeline(
     rerank_top_n: int | None = None,
     rrf_k: int | None = None,
 ) -> RagResult:
-    """多查询召回 → 按 chunk id 去重 → 用 resolved_query 精排一次 → 单次自评。"""
+    """多查询召回 → 按 chunk id 去重 → 用扩写主查询精排一次 → 单次自评。
+
+    精排查询必须是**政策化**的扩写主查询（`cleaned[0]`），不能直接用口语原句：
+    原句带着商品名/订单号（如「订单1001的猫爬架能退吗」），而政策条款里没有这些词，
+    交叉编码器会把真正适用的条款压到 0.25 的拒答闸门以下（实测 0.23 vs 0.83）。
+    扩写降级时 `cleaned == [resolved_query]`，行为自然退回单查询精排。
+    """
     resolution = (resolved_query or "").strip()[:_QUERY_MAX_LENGTH]
     cleaned: list[str] = []
     for item in queries or []:
@@ -214,7 +220,7 @@ def run_expanded_pipeline(
     items = candidates
     if has_rerank(chosen) and candidates:
         items, rerank_score, rerank_degraded = rerank_stage(
-            candidates, resolution, reranker=reranker, top_n=rerank_n
+            candidates, cleaned[0], reranker=reranker, top_n=rerank_n
         )
 
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
