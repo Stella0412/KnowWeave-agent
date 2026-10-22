@@ -551,6 +551,7 @@
   let sessionId = null;
   let sending = false;
   let conversations = [];
+  let historyRequestToken = 0;
 
   function scrollToBottom() {
     chatEl.scrollTop = chatEl.scrollHeight;
@@ -759,10 +760,12 @@
 
   async function openConversation(id) {
     if (sending) return;
+    const token = ++historyRequestToken;
     try {
       const resp = await fetch('/api/conversations/' + id + '/messages');
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
+      if (token !== historyRequestToken) return; // 已有更新的切换，丢弃过期响应
       sessionId = id;
       closeTicketModal();
       closeRefundModal();
@@ -774,11 +777,13 @@
       closeSidebar();
       renderConversationList();
     } catch (e) {
+      if (token !== historyRequestToken) return; // 过期切换已取消，不弹错误提示
       appendSystemNotice('历史会话加载失败，请稍后重试。');
     }
   }
 
   function reset() {
+    historyRequestToken++;
     sessionId = null;
     closeTicketModal();
     closeRefundModal();

@@ -24,3 +24,9 @@ def test_sidebar_uses_text_content_for_preview():
     html = Path("static/index.html").read_text(encoding="utf-8")
     assert "preview.textContent = " in html
     assert "item.innerHTML = '<span>' + c.preview" not in html
+
+
+def test_open_conversation_guards_against_stale_responses():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    assert "historyRequestToken" in html
+    assert "token !== historyRequestToken" in html
