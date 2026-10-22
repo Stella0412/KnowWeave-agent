@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     Conversation,
     ConversationStatus,
+    ConversationSummary,
     FaithCase,
     FaithCaseStatus,
     FAQ,
@@ -40,6 +41,55 @@ class ChatRepository:
 
     async def get_conversation(self, conversation_id: int) -> Conversation | None:
         return await self._session.get(Conversation, conversation_id)
+
+    async def get_conversation_for_update(self, conversation_id: int) -> Conversation | None:
+        result = await self._session.execute(
+            select(Conversation)
+            .where(Conversation.id == conversation_id)
+            .with_for_update()
+        )
+        return result.scalars().first()
+
+    async def list_summaries(self, conversation_id: int) -> list[ConversationSummary]:
+        result = await self._session.execute(
+            select(ConversationSummary)
+            .where(ConversationSummary.conversation_id == conversation_id)
+            .order_by(ConversationSummary.seq)
+        )
+        return list(result.scalars())
+
+    async def next_summary_seq(self, conversation_id: int) -> int:
+        result = await self._session.execute(
+            select(func.max(ConversationSummary.seq)).where(
+                ConversationSummary.conversation_id == conversation_id
+            )
+        )
+        return int(result.scalar() or 0) + 1
+
+    async def add_summary(
+        self,
+        conversation_id: int,
+        *,
+        seq: int,
+        from_msg_id: int,
+        upto_msg_id: int,
+        content: str,
+    ) -> ConversationSummary:
+        row = ConversationSummary(
+            conversation_id=conversation_id,
+            seq=seq,
+            from_msg_id=from_msg_id,
+            upto_msg_id=upto_msg_id,
+            content=content,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def touch_conversation(self, conversation_id: int) -> None:
+        conv = await self.get_conversation(conversation_id)
+        if conv is not None:
+            conv.updated_at = datetime.now()
 
     async def set_conversation_status(
         self, conversation_id: int, status: ConversationStatus
