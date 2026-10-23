@@ -1,3 +1,5 @@
+import copy
+
 from langchain_core.tools import BaseTool
 
 from app.config import settings
@@ -10,6 +12,8 @@ from app.tools.business import (
     query_product,
     submit_refund,
 )
+from app.tools.contracts import ToolDefinition
+from app.tools.validation import check_schema
 
 # 单轮耗时的工具要单独给预算：query_faq 一轮要跑改写(LLM) + 嵌入 + 混合检索 + 精排(网络)，
 # 5 秒的全局 tool_timeout 会把它当场掐断（还白重试一次）。
@@ -52,3 +56,24 @@ def build_tools(
         submit_refund,
         build_create_ticket(session_factory, conversation_id),
     ]
+
+
+class ToolRegistry:
+    """动态工具注册中心。
+
+    与固定 build_tools 并存（Task 6 移除固定绑定）。register 后下一次 snapshot 即包含；
+    重名显式报错不覆盖；snapshot 返回完全独立的深拷贝，注册后外部改动定义或改动快照
+    都不影响注册表或其他快照。
+    """
+
+    def __init__(self) -> None:
+        self._tools: dict[str, ToolDefinition] = {}
+
+    def register(self, definition: ToolDefinition) -> None:
+        check_schema(definition.parameters)  # 非法 Schema 永不入册
+        if definition.name in self._tools:
+            raise ValueError(f"工具名重复: {definition.name}")
+        self._tools[definition.name] = copy.deepcopy(definition)
+
+    def snapshot(self) -> dict[str, ToolDefinition]:
+        return {name: copy.deepcopy(tool) for name, tool in self._tools.items()}

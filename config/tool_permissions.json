@@ -1,0 +1,1 @@
+{"mcp": {"logistics": {"query_logistics": "read"}, "after_sales": {"query_warranty": "read", "query_return_progress": "read"}}}
