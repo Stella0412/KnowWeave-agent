@@ -766,7 +766,7 @@
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
       if (token !== historyRequestToken) return; // 已有更新的切换，丢弃过期响应
-      sessionId = id;
+      sessionId = String(id);
       closeTicketModal();
       closeRefundModal();
       chatEl.innerHTML = '';
@@ -802,7 +802,7 @@
     try { ev = JSON.parse(payload); } catch { return; }
     switch (ev.type) {
       case 'session':
-        sessionId = ev.session_id;
+        sessionId = String(ev.session_id);
         loadConversations();
         break;
       case 'tool_status': {
