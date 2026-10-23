@@ -23,6 +23,7 @@ from app.rag.pipeline import TurnContext, default_source_files
 from app.services.context_manager import ContextManager
 from app.services.summary_service import SummaryService
 from app.services.token_counter import TokenCounter, compute_budget
+from app.tools.ticket_authorization import update_ticket_request
 
 logger = logging.getLogger("knowweave.turn")
 
@@ -214,6 +215,10 @@ class ChatService:
         config = thread_config(conversation_id)
         snapshot = await self._graph.aget_state(config)
         existing = list((snapshot.values or {}).get("messages") or []) if snapshot else []
+        # ch08 建单意图证据：只从「上一轮 checkpoint 证据 + 本轮落库用户原话」推导，
+        # 模型输出 / 工具参数 / create_ticket 参数一律无权注入。存 dict 以便 checkpoint 序列化。
+        previous_ticket = (snapshot.values or {}).get("ticket_request") if snapshot else None
+        ticket_evidence = update_ticket_request(previous_ticket, new_user_id, message)
         if existing:
             # checkpoint 里已有历史：本轮只发新消息，历史由 checkpointer 带给图。
             input_messages = []
@@ -237,6 +242,9 @@ class ChatService:
             "conversation_id": conversation_id,
             "turn_user_msg_id": new_user_id,
             "context_meta": {},
+            "ticket_request": (
+                ticket_evidence.to_dict() if ticket_evidence is not None else None
+            ),
             "intent": None,
             "intent_source": None,
             "route": None,

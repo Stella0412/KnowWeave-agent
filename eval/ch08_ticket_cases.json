@@ -1,0 +1,10 @@
+[
+  {"id": "explicit_request", "category": "明确请求", "turns": ["帮我建个工单，收到的猫粮包装破损"], "expected": "preview"},
+  {"id": "complaint_only", "category": "仅投诉", "turns": ["我要投诉"], "expected": "no_chat_ticket"},
+  {"id": "explicit_missing", "category": "缺描述", "turns": ["帮我建个工单"], "expected": "ask_description"},
+  {"id": "fill", "category": "补充", "turns": ["帮我建个工单", "收到的猫粮包装破损"], "expected": "preview"},
+  {"id": "negation", "category": "否定", "turns": ["不要帮我建工单"], "expected": "no_chat_ticket"},
+  {"id": "quote", "category": "引用", "turns": ["他说‘帮我建个工单’，这是什么意思？"], "expected": "no_chat_ticket"},
+  {"id": "conditional", "category": "条件句", "turns": ["如果猫粮包装破损就帮我建个工单"], "expected": "no_chat_ticket"},
+  {"id": "withdrawal", "category": "撤回", "turns": ["帮我建个工单", "算了不建工单"], "expected": "no_chat_ticket"}
+]

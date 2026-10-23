@@ -19,6 +19,10 @@ class ConversationState(TypedDict, total=False):
     turn_user_msg_id: int | None
     context_meta: dict
 
+    # ch08 建单意图证据：以 JSON 可序列化 dict（asdict(TicketRequestEvidence)）落 checkpoint，
+    # 由 ChatService 每轮从「上一轮证据 + 落库用户原话」推导后注入；图内节点只读不写。
+    ticket_request: dict | None
+
     resolved_query: str | None
     coref_source: str | None
     intent: str | None
