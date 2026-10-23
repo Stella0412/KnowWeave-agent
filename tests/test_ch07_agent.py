@@ -16,7 +16,7 @@ class FakeModel:
         self.calls = []
 
     def bind_tools(self, tools):
-        self.bound = [tool.name for tool in tools]
+        self.bound = [t["name"] for t in tools]
         return self
 
     async def ainvoke(self, messages):
@@ -109,7 +109,7 @@ async def test_message_order_and_only_one_system(caplog):
     assert sent[7].tool_call_id == "c1"
     assert "model_ctx" in caplog.text
     assert runtime.context.model.bound == [
-        "query_order", "query_product", "query_logistics",
+        "query_order", "query_product",
         "query_faq", "submit_refund", "create_ticket",
     ]
 

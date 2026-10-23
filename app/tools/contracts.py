@@ -39,6 +39,7 @@ class ExecutionContext:
     turn: Any = None
     ticket_request: Any = None
     confirmation: Any = None
+    state: Any = None
 
 
 @dataclass

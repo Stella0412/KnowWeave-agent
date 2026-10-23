@@ -33,7 +33,7 @@ class ScriptedAgentModel:
         self.seen = []
 
     def bind_tools(self, tools):
-        self.bound_tools = [t.name for t in tools]
+        self.bound_tools = [t["name"] for t in tools]
         return self
 
     async def ainvoke(self, messages):
@@ -125,7 +125,7 @@ async def test_kg_question_forced_rag_then_agent(monkeypatch, session_factory):
     assert agent.calls == 1
     assert "7 天无理由退货" in agent.seen[0][-1].content
     assert agent.bound_tools == [
-        "query_order", "query_product", "query_logistics",
+        "query_order", "query_product",
         "query_faq", "submit_refund", "create_ticket",
     ]
 
@@ -145,7 +145,7 @@ async def test_business_question_skips_rag_and_takes_two_steps(monkeypatch, sess
             {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
         ]),
         AIMessage(content="", tool_calls=[
-            {"name": "query_logistics", "args": {"tracking_no": "SF1001CN"}, "id": "c2", "type": "tool_call"}
+            {"name": "logistics_query_logistics", "args": {"tracking_no": "SF1001CN"}, "id": "c2", "type": "tool_call"}
         ]),
         AIMessage(content="已为您查到物流"),
     ])
@@ -156,7 +156,7 @@ async def test_business_question_skips_rag_and_takes_two_steps(monkeypatch, sess
     )
     assert state["route"] == "business"
     assert state["steps"] == 3
-    assert state["trace"]["tools"] == ["query_order", "query_logistics"]
+    assert state["trace"]["tools"] == ["query_order", "logistics_query_logistics"]
     assert state["answer"] == "已为您查到物流"
 
 

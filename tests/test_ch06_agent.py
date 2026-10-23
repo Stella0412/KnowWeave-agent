@@ -16,7 +16,7 @@ class FakeAgent:
         self.calls = []
 
     def bind_tools(self, tools):
-        self.bound = [tool.name for tool in tools]
+        self.bound = [t["name"] for t in tools]
         return self
 
     async def ainvoke(self, messages):
@@ -120,6 +120,11 @@ def _state(**overrides):
         "steps": 0,
         "tokens_used": 0,
         "suggested_actions": [],
+        "citations": [],
+        "pending_tool_calls": [],
+        "tool_cursor": 0,
+        "tool_tokens_used": 0,
+        "refund_offered": None,
     }
     state.update(overrides)
     return state
@@ -132,7 +137,7 @@ async def test_refund_agent_binds_full_fixed_tool_set(session_factory):
     runtime.context.model = model
     await agent_llm(_state(), runtime)
     assert model.bound == [
-        "query_order", "query_product", "query_logistics",
+        "query_order", "query_product",
         "query_faq", "submit_refund", "create_ticket",
     ]
 
@@ -179,7 +184,7 @@ def test_logistics_dynamic_block_forbids_refund_arrival_reading():
     )
     assert "物流查询" in text
     assert "不是退款到账时间" in text
-    assert "重新调用 query_logistics" in text
+    assert "重新调用 logistics_query_logistics" in text
 
 
 @pytest.mark.asyncio
@@ -225,7 +230,7 @@ async def test_after_sale_agent_binds_full_fixed_tool_set(session_factory):
     runtime.context.model = model
     await agent_llm(_state(intent="after_sale"), runtime)
     assert model.bound == [
-        "query_order", "query_product", "query_logistics",
+        "query_order", "query_product",
         "query_faq", "submit_refund", "create_ticket",
     ]
 
@@ -239,6 +244,12 @@ async def test_after_sale_create_ticket_adds_transfer_action(session_factory):
             "args": {"description": "猫爬架破损", "ticket_type": "售后"},
             "id": "c1", "type": "tool_call",
         }])],
+        pending_tool_calls=[{
+            "name": "create_ticket",
+            "args": {"description": "猫爬架破损", "ticket_type": "售后"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
     types = [item["type"] for item in update["suggested_actions"]]
@@ -253,7 +264,12 @@ async def test_submit_refund_intercept_adds_form(session_factory):
         messages=[AIMessage(content="", tool_calls=[{
             "name": "submit_refund", "args": {"order_no": "1001"},
             "id": "c1", "type": "tool_call",
-        }])]
+        }])],
+        pending_tool_calls=[{
+            "name": "submit_refund", "args": {"order_no": "1001"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
     action = update["suggested_actions"][0]
@@ -280,6 +296,11 @@ async def test_submit_refund_intercept_blocks_ineligible_order(session_factory):
             "name": "submit_refund", "args": {"order_no": "1002"},
             "id": "c1", "type": "tool_call",
         }])],
+        pending_tool_calls=[{
+            "name": "submit_refund", "args": {"order_no": "1002"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
     assert update["suggested_actions"] == []
@@ -293,7 +314,12 @@ async def test_refund_tool_message_scopes_repeat_call_to_current_turn(session_fa
         messages=[AIMessage(content="", tool_calls=[{
             "name": "submit_refund", "args": {"order_no": "1001"},
             "id": "c1", "type": "tool_call",
-        }])]
+        }])],
+        pending_tool_calls=[{
+            "name": "submit_refund", "args": {"order_no": "1001"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
     content = update["messages"][0].content
@@ -310,7 +336,12 @@ async def test_submit_refund_wrong_order_does_not_add_form(session_factory):
         messages=[AIMessage(content="", tool_calls=[{
             "name": "submit_refund", "args": {"order_no": "9999"},
             "id": "c1", "type": "tool_call",
-        }])]
+        }])],
+        pending_tool_calls=[{
+            "name": "submit_refund", "args": {"order_no": "9999"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
     assert update["suggested_actions"] == []

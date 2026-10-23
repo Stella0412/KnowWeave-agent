@@ -1,9 +1,11 @@
 import asyncio
+import inspect
 import logging
 import time
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphBubbleUp
 
 from app.tools.contracts import AuditRecord, ToolOutcome, TransientToolError
 from app.tools.formatting import format_outcome, summarize_for_audit
@@ -87,6 +89,12 @@ class ToolEngine:
         self.retries = retries
         self.sleep = sleep
 
+    def _resolve_timeout(self, name: str) -> float:
+        """timeout 既可以是标量，也可以是按工具名给预算的 callable。"""
+        if callable(self.timeout):
+            return self.timeout(name)
+        return self.timeout
+
     async def execute(self, tool_call: dict, context, tools_by_name: dict) -> ToolMessage:
         name = tool_call.get("name", "")
         call_id = tool_call.get("id", "")
@@ -125,6 +133,28 @@ class ToolEngine:
                 status="权限拒绝", error_message=message, retry_count=0, duration_ms=0,
             )
 
+        # 3.5 可信本地守卫（在权限放行之后、确认/执行之前应用）
+        if definition.guard is not None:
+            try:
+                result = definition.guard(args, context)
+                if inspect.isawaitable(result):
+                    result = await result
+            except GraphBubbleUp:
+                raise
+            except Exception as e:  # 守卫崩溃即 fail-closed，不执行；不捕 BaseException
+                message = f"工具守卫失败: {e}"
+                return await self._emit(
+                    context, name, call_id, args, definition,
+                    ToolOutcome("fault", data=None, message=message),
+                    status="失败", error_message=str(e), retry_count=0, duration_ms=0,
+                )
+            if result is not None:
+                # 守卫返回 ToolOutcome 即拦截：不执行，记权限拒绝，返回格式化后的 ToolMessage
+                return await self._emit(
+                    context, name, call_id, args, definition, result,
+                    status="权限拒绝", error_message=result.message, retry_count=0, duration_ms=0,
+                )
+
         # 4. 写工具需要可信确认入口；确认失败不执行
         if definition.effect == "write":
             confirmation = context.confirmation
@@ -137,6 +167,8 @@ class ToolEngine:
                 )
             try:
                 confirmed = await confirmation(definition, args, context)
+            except GraphBubbleUp:
+                raise
             except Exception as e:  # 不捕 BaseException，取消/中断向上传播
                 message = f"写操作确认阶段失败: {e}"
                 return await self._emit(
@@ -185,10 +217,13 @@ class ToolEngine:
         for attempt in range(max_attempts):
             try:
                 result = await asyncio.wait_for(
-                    definition.invoke(args, context), timeout=self.timeout
+                    definition.invoke(args, context),
+                    timeout=self._resolve_timeout(definition.name),
                 )
                 succeeded = True
                 break
+            except GraphBubbleUp:
+                raise
             except (TimeoutError, asyncio.TimeoutError) as e:
                 last_error = e
                 if retry_allowed and attempt < self.retries:
@@ -251,4 +286,9 @@ class ToolEngine:
             await self.audit_writer(record)
         except Exception:  # 审计失败隔离：不改结果、不把成功变失败
             logger.warning("audit_writer failed for tool %s", name, exc_info=True)
-        return ToolMessage(content=content, tool_call_id=call_id, name=name)
+        return ToolMessage(
+            content=content,
+            tool_call_id=call_id,
+            name=name,
+            artifact={"category": outcome.category, "actions": list(outcome.actions)},
+        )

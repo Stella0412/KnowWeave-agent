@@ -20,6 +20,7 @@ from app.graph.nodes import (
 from app.graph.routing import (
     gate_router,
     make_should_continue,
+    make_tool_loop_router,
     refund_order_router,
     route_by_intent,
 )
@@ -77,7 +78,11 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
         make_should_continue(max_agent_steps),
         {"tools": "agent_tools", "log": "log", "fallback": "fallback_reply"},
     )
-    graph.add_edge("agent_tools", "agent_llm")
+    graph.add_conditional_edges(
+        "agent_tools",
+        make_tool_loop_router(),
+        {"tools": "agent_tools", "agent_llm": "agent_llm"},
+    )
     graph.add_edge("fallback_reply", "log")
     graph.add_edge("complaint_reply", "log")
     graph.add_edge("chitchat_reply", "log")

@@ -1,7 +1,9 @@
 """图级 ReAct 的两步：推理（agent_llm）与行动（agent_tools）。
 
-`create_ticket` 在行动步被拦截成「前端按钮提议」：不写库、不改变会话状态，
-只返回一条合成 ToolMessage 让模型收敛。
+ch08：工具调用改走动态工具引擎。agent_llm 每次调用取一轮工具快照并绑定 JSON Schema；
+agent_tools 每次节点执行只处理 pending_tool_calls 里游标指向的那一个调用，执行完推进
+游标，由 make_tool_loop_router 决定回到 agent_tools（还有未执行调用）还是 agent_llm。
+create_ticket 仍按旧策略在 agent 节点拦截成「前端按钮提议」，Task 9 前不写库。
 """
 
 import json
@@ -18,11 +20,13 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from app.prompts.context import build_dynamic_block
 from app.prompts.customer_service import SYSTEM_PROMPT
 from app.services.context_manager import serialize_message, split_turns
-from app.services.refund_policy import check_refund_eligibility
 from app.services.token_counter import TokenCounter, text_of
-from app.tools.business import REFUND_REASON_CATEGORIES
-from app.tools.executor import execute_tool
-from app.tools.registry import allowed_tool_names, build_tools, tool_timeout
+from app.tools.builtin import build_tool_snapshot, register_builtins
+from app.tools.contracts import ExecutionContext
+from app.tools.executor import ToolEngine
+from app.tools.policy import PolicyStore
+from app.tools.registry import ToolRegistry, tool_timeout
+from app.tools.validation import argument_errors
 
 logger = logging.getLogger("knowweave.turn")
 context_logger = logging.getLogger("knowweave.context")
@@ -33,11 +37,49 @@ def _usage_tokens(ai: AIMessage) -> int:
     return int(usage.get("total_tokens") or 0)
 
 
+def _schema_of(definition) -> dict:
+    """把 ToolDefinition 转成 bind_tools 可接受的 OpenAI function 风格 dict。"""
+    return {
+        "name": definition.name,
+        "description": definition.description,
+        "parameters": definition.parameters,
+    }
+
+
+def _resolve_registry(context) -> ToolRegistry:
+    """context.registry 为空时回退到「仅内置工具」注册表，保证直连单测可用。"""
+    registry = getattr(context, "registry", None)
+    if registry is None:
+        registry = ToolRegistry()
+        register_builtins(registry)
+    return registry
+
+
+def _resolve_engine(context) -> ToolEngine:
+    """context.engine 为空时构造一个仅放行内置工具的引擎（直连单测兜底）。"""
+    engine = getattr(context, "engine", None)
+    if engine is not None:
+        return engine
+    from app.tools.audit import write_audit
+
+    session_factory = getattr(context, "session_factory", None)
+    default = getattr(context, "tool_timeout", 5.0)
+    policy = PolicyStore("")  # 空路径加载失败 → 快照只放行内置工具
+    return ToolEngine(
+        policy,
+        lambda record: write_audit(session_factory, record),
+        timeout=lambda name: tool_timeout(name, default),
+        retries=getattr(context, "tool_retries", 1),
+    )
+
+
 async def agent_llm(state, runtime):
     context = runtime.context
     route = state.get("route") or "business"
     intent = state.get("intent")
-    tools = build_tools(context.session_factory, state["conversation_id"], context.turn)
+    registry = _resolve_registry(context)
+    provider = getattr(context, "provider", None)
+    definitions = await build_tool_snapshot(registry, provider)
     messages = list(state.get("messages") or [])
     meta = state.get("context_meta") or {}
     manager = getattr(context, "context_manager", None)
@@ -92,7 +134,8 @@ async def agent_llm(state, runtime):
         sent.append(HumanMessage(content=current_text, id=getattr(current, "id", None)))
     sent.extend(react)
 
-    schemas = [convert_to_openai_tool(tool) for tool in tools]
+    raw_schemas = [_schema_of(d) for d in definitions.values()]
+    schemas = [convert_to_openai_tool(schema) for schema in raw_schemas]
     schema_text = json.dumps(schemas, ensure_ascii=False, sort_keys=True)
     estimated_messages_tokens = counter.count_messages(sent)
     estimated_tool_tokens = counter.count_text(schema_text)
@@ -109,7 +152,7 @@ async def agent_llm(state, runtime):
         "estimated_tokens": estimated_messages_tokens,
         "estimated_tool_tokens": estimated_tool_tokens,
         "estimated_total_tokens": estimated_tokens,
-        "tools": [tool.name for tool in tools],
+        "tools": list(definitions),
         "tool_schemas": schemas,
         "budget": getattr(getattr(context, "budget", None), "as_dict", lambda: {})() if getattr(context, "budget", None) else {},
         "anchors": {
@@ -120,7 +163,7 @@ async def agent_llm(state, runtime):
         "intent": intent,
     }, ensure_ascii=False))
 
-    ai = await context.model.bind_tools(tools).ainvoke(sent)
+    ai = await context.model.bind_tools(raw_schemas).ainvoke(sent)
     actual_tokens = _usage_tokens(ai)
     if actual_tokens:
         context_logger.info(json.dumps({
@@ -133,178 +176,161 @@ async def agent_llm(state, runtime):
             "actual_tokens": actual_tokens,
             "ratio": round(actual_tokens / max(1, estimated_tokens), 3),
         }, ensure_ascii=False))
+
     update = {
         "messages": [ai],
         "steps": int(state.get("steps", 0)) + 1,
         "tokens_used": int(state.get("tokens_used", 0)) + _usage_tokens(ai),
-        # 每轮重置：有工具调用时这一轮还没有最终答复。
-        "answer": None,
     }
-    if not ai.tool_calls:
-        update["answer"] = text_of(ai.content)
-        update["stop_reason"] = "no_tool_calls"
+    if ai.tool_calls:
+        # 有工具调用：进入工具循环，重置队列与游标；本轮还没有最终答复。
+        update.update({
+            "answer": None,
+            "pending_tool_calls": list(ai.tool_calls),
+            "tool_cursor": 0,
+            "tool_tokens_used": 0,
+        })
+    else:
+        update.update({
+            "answer": text_of(ai.content),
+            "stop_reason": "no_tool_calls",
+            "pending_tool_calls": [],
+            "tool_cursor": 0,
+            "tool_tokens_used": 0,
+        })
     return update
 
 
-def _intercept_create_ticket(tool_call, tools_by_name, actions, *, intent=None):
-    call_id = tool_call.get("id", "")
-    tool = tools_by_name.get("create_ticket")
-    if tool is None:
-        return ToolMessage(content="未知工具: create_ticket", tool_call_id=call_id, name="create_ticket")
-    try:
-        parsed = tool.args_schema.model_validate(tool_call.get("args") or {})
-    except Exception as exc:
+def _format_argument_errors(errors: list[dict]) -> str:
+    parts = []
+    for e in errors:
+        path = "/".join(str(p) for p in e["path"]) or "(root)"
+        message = e["message"]
+        if "allowed_values" in e:
+            message += f"（允许值: {', '.join(map(str, e['allowed_values']))}）"
+        parts.append(f"{path}: {message}")
+    return "参数校验失败: " + "; ".join(parts)
+
+
+def _intercept_create_ticket(call, definitions, *, intent=None) -> ToolMessage:
+    """create_ticket 保持旧拦截策略：不写库，只产出前端按钮提议（Task 9 前）。
+
+    参数改用 definition.parameters 做严格 JSON Schema 校验（不再是旧 Pydantic args_schema）。
+    """
+    call_id = call.get("id", "")
+    name = "create_ticket"
+    definition = definitions.get("create_ticket")
+    if definition is None:
+        return ToolMessage(content="未知工具: create_ticket", tool_call_id=call_id, name=name)
+
+    args = call.get("args") or {}
+    errors = argument_errors(definition.parameters, args)
+    if errors:
         return ToolMessage(
-            content=f"工具参数校验失败: {exc}",
+            content=_format_argument_errors(errors),
             tool_call_id=call_id,
-            name="create_ticket",
+            name=name,
         )
 
-    description = getattr(parsed, "description", "")
-    ticket_type = getattr(parsed, "ticket_type", "咨询")
+    description = args.get("description", "")
+    ticket_type = args.get("ticket_type", "咨询")
+    produced = []
     if intent == "after_sale" and ticket_type == "售后":
-        transfer = {"type": "transfer_human", "label": "转人工"}
-        if transfer not in actions:
-            actions.append(transfer)
-    action = {
+        produced.append({"type": "transfer_human", "label": "转人工"})
+    produced.append({
         "type": "create_ticket",
         "label": "建工单",
         "draft": {"description": description, "ticket_type": ticket_type},
-    }
-    if action not in actions:
-        actions.append(action)
+    })
     return ToolMessage(
         content="工单选项已呈现给用户，请简要说明并停止，不要再次调用 create_ticket。",
         tool_call_id=call_id,
-        name="create_ticket",
+        name=name,
+        artifact={"category": "success", "actions": produced},
     )
-
-
-def _intercept_submit_refund(tool_call, tools_by_name, actions, state):
-    call_id = tool_call.get("id", "")
-    tool = tools_by_name.get("submit_refund")
-    if tool is None:
-        return ToolMessage(content="未知工具: submit_refund", tool_call_id=call_id), False
-    try:
-        parsed = tool.args_schema.model_validate(tool_call.get("args") or {})
-    except Exception as exc:
-        return ToolMessage(
-            content=f"工具参数校验失败: {exc}", tool_call_id=call_id, name="submit_refund"
-        ), False
-    order_no = str(getattr(parsed, "order_no", "") or "").strip()
-    if order_no != str(state.get("order_no") or ""):
-        return ToolMessage(
-            content="退款单订单号与本轮订单不一致，不能生成表单。",
-            tool_call_id=call_id, name="submit_refund",
-        ), False
-    order = state.get("order_data") or {}
-    # 模型判断可能出错（例如把定制类当成普通商品）；表单只对确定能无理由退货的订单生成。
-    eligible, reason = check_refund_eligibility(order)
-    if not eligible:
-        return ToolMessage(
-            content=f"该订单不能生成退款表单：{reason}。不要调用 submit_refund，请向用户说明原因。",
-            tool_call_id=call_id, name="submit_refund",
-        ), False
-    action = {
-        "type": "refund_form",
-        "label": "提交退款单",
-        "draft": {
-            "order_no": order_no,
-            "product_name": order.get("product_name", ""),
-            "reason_options": list(REFUND_REASON_CATEGORIES),
-        },
-    }
-    if action not in actions:
-        actions.append(action)
-    return ToolMessage(
-        # 这条消息会随历史落库。「不要再次调用」若不限定本轮，下一轮用户再要求退款时
-        # 模型会以为表单还在，既不调用工具、前端也就拿不到新的 refund_form 动作。
-        content=(
-            "本轮退款表单已呈现给用户，请简要说明并停止，本轮不要再次调用 submit_refund。"
-            "用户下一轮再次要求退款时，表单不会保留，必须重新调用 submit_refund。"
-        ),
-        tool_call_id=call_id, name="submit_refund",
-    ), True
 
 
 async def agent_tools(state, runtime):
     context = runtime.context
-    route = state.get("route") or "business"
-    intent = state.get("intent")
-    tools = build_tools(
-        context.session_factory, state["conversation_id"], context.turn
-    )
-    by_name = {tool.name: tool for tool in tools}
-    allowed = allowed_tool_names(route, intent)
+    registry = _resolve_registry(context)
+    provider = getattr(context, "provider", None)
+    definitions = await build_tool_snapshot(registry, provider)
+    engine = _resolve_engine(context)
+
+    pending = list(state.get("pending_tool_calls") or [])
+    cursor = int(state.get("tool_cursor") or 0)
+    if cursor >= len(pending):
+        # 防御性：正常由 tool_loop_router 拦住，不会执行到这里。
+        return {
+            "messages": [],
+            "tool_cursor": cursor,
+            "suggested_actions": list(state.get("suggested_actions") or []),
+            "citations": list(state.get("citations") or []),
+            "refund_offered": bool(state.get("refund_offered")),
+        }
+
+    call = pending[cursor]
+    name = call.get("name", "")
     actions = list(state.get("suggested_actions") or [])
-    last = state["messages"][-1]
-    calls = list(getattr(last, "tool_calls", None) or [])
     counter = getattr(context, "counter", None) or TokenCounter()
     budget = int(getattr(context, "tool_result_max_tokens", 1200))
-    results: list[ToolMessage | None] = [None] * len(calls)
-    to_execute: list[int] = []
-    special_tokens = 0
-    refund_offered = bool(state.get("refund_offered"))
+    tool_tokens_used = int(state.get("tool_tokens_used") or 0)
 
-    for index, call in enumerate(calls):
-        name = call.get("name", "")
-        call_id = call.get("id", "")
-        if name not in allowed:
-            message = ToolMessage(
-                content=f"本轮不允许调用 {name}", tool_call_id=call_id, name=name
-            )
-            results[index] = message
-            special_tokens += counter.count_message(message)
-            logger.info(json.dumps({
-                "event": "tool_blocked", "conversation_id": state.get("conversation_id"),
-                "route": route, "intent": intent, "tool": name,
-            }, ensure_ascii=False))
-            continue
-        if name == "create_ticket":
-            message = _intercept_create_ticket(call, by_name, actions, intent=intent)
-        elif name == "submit_refund":
-            message, offered = _intercept_submit_refund(call, by_name, actions, state)
-            refund_offered = refund_offered or offered
-        else:
-            to_execute.append(index)
-            continue
-        results[index] = message
-        special_tokens += counter.count_message(message)
+    # 每次执行前按剩余调用数分配本轮预算（含当前这一条）。
+    remaining_calls = len(pending) - cursor
+    share = max(0, budget - tool_tokens_used) // remaining_calls if remaining_calls else 0
 
-    remaining = max(0, budget - special_tokens)
-    share = remaining // len(to_execute) if to_execute else 0
-    for index in to_execute:
-        call = calls[index]
-        message = await execute_tool(
-            call,
-            by_name,
-            timeout=tool_timeout(call.get("name", ""), context.tool_timeout),
-            retries=context.tool_retries,
+    if name == "create_ticket":
+        message = _intercept_create_ticket(call, definitions, intent=state.get("intent"))
+    else:
+        exec_context = ExecutionContext(
+            conversation_id=state.get("conversation_id"),
+            tool_call_id=call.get("id", ""),
+            session_factory=context.session_factory,
+            turn=context.turn,
+            state=state,
         )
-        if counter.count_message(message) > share:
-            overhead = (
-                4
-                + counter.count_text(message.name or "")
-                + counter.count_text(message.tool_call_id or "")
-            )
-            content = counter.truncate_text(
-                text_of(message.content), max(0, share - overhead), "…（工具结果已截断）"
-            )
-            message = message.model_copy(update={"content": content})
-            logger.info(json.dumps({
-                "event": "tool_result_truncated",
-                "conversation_id": state.get("conversation_id"),
-                "tool": call.get("name", ""), "cap": share,
-            }, ensure_ascii=False))
-        results[index] = message
+        message = await engine.execute(call, exec_context, definitions)
+
+    # 单条结果截断（与旧批量实现共用同一预算口径）。
+    if counter.count_message(message) > share:
+        overhead = (
+            4
+            + counter.count_text(message.name or "")
+            + counter.count_text(message.tool_call_id or "")
+        )
+        content = counter.truncate_text(
+            text_of(message.content), max(0, share - overhead), "…（工具结果已截断）"
+        )
+        message = message.model_copy(update={"content": content})
+        logger.info(json.dumps({
+            "event": "tool_result_truncated",
+            "conversation_id": state.get("conversation_id"),
+            "tool": name, "cap": share,
+        }, ensure_ascii=False))
+
+    tool_tokens_used += counter.count_message(message)
+
+    # 从 ToolMessage.artifact 收集前端动作（去重），替代旧解析。
+    artifact = getattr(message, "artifact", None) or {}
+    new_actions = artifact.get("actions", [])
+    for action in new_actions:
+        if action not in actions:
+            actions.append(action)
 
     citations = list(state.get("citations") or [])
-    for citation in context.turn.citations:
+    for citation in getattr(context.turn, "citations", None) or []:
         if citation not in citations:
             citations.append(citation)
 
+    refund_offered = bool(state.get("refund_offered"))
+    if any(isinstance(a, dict) and a.get("type") == "refund_form" for a in new_actions):
+        refund_offered = True
+
     return {
-        "messages": [message for message in results if message is not None],
+        "messages": [message],
+        "tool_cursor": cursor + 1,
+        "tool_tokens_used": tool_tokens_used,
         "suggested_actions": actions,
         "citations": citations,
         "refund_offered": refund_offered,

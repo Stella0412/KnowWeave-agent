@@ -43,3 +43,14 @@ def make_should_continue(max_steps: int):
         return "tools"
 
     return should_continue
+
+
+def make_tool_loop_router():
+    """agent_tools 之后的循环路由：游标未走完继续执行下一个调用，否则回到 agent_llm。"""
+
+    def tool_loop_router(state) -> str:
+        cursor = int(state.get("tool_cursor") or 0)
+        pending = state.get("pending_tool_calls") or []
+        return "tools" if cursor < len(pending) else "agent_llm"
+
+    return tool_loop_router

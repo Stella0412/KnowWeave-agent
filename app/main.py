@@ -16,6 +16,12 @@ from app.routers import chat, conversations, extract, rag_eval
 from app.services.chat_service import build_chat_service
 from app.services.context_manager import log_startup_budget
 from app.services.token_counter import TokenCounter
+from app.tools.audit import write_audit
+from app.tools.builtin import register_builtins
+from app.tools.executor import ToolEngine
+from app.tools.mcp_client import MCPToolProvider, create_mcp_client
+from app.tools.policy import PolicyStore
+from app.tools.registry import ToolRegistry, tool_timeout
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -55,8 +61,21 @@ async def lifespan(app: FastAPI):
             checkpointer=saver,
             max_agent_steps=settings.max_agent_steps,
         )
+        registry = ToolRegistry()
+        register_builtins(registry)
+        policy = PolicyStore(settings.tool_permissions_path)
+        provider = MCPToolProvider(
+            create_mcp_client(settings), policy, settings.mcp_discovery_timeout,
+        )
+        engine = ToolEngine(
+            policy,
+            lambda record: write_audit(SessionFactory, record),
+            timeout=lambda name: tool_timeout(name, settings.tool_timeout),
+            retries=settings.tool_retries,
+        )
         app.state.chat_service = build_chat_service(
             app.state.graph, settings=settings, session_factory=SessionFactory,
+            registry=registry, provider=provider, engine=engine,
         )
         try:
             yield

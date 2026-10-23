@@ -46,6 +46,9 @@ class ConversationState(TypedDict, total=False):
     steps: int
     turn_msg_offset: int
     tokens_used: int
+    pending_tool_calls: list[dict]
+    tool_cursor: int
+    tool_tokens_used: int
     suggested_actions: list[dict]
     fallback_reason: str | None
     stop_reason: str | None
@@ -69,3 +72,6 @@ class GraphContext:
     budget: Any = None
     tool_result_max_tokens: int = 1200
     settings: Any = None
+    registry: Any = None
+    provider: Any = None
+    engine: Any = None

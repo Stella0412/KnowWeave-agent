@@ -19,7 +19,6 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from app.db.repository import ChatRepository
 from app.prompts.customer_service import SYSTEM_PROMPT
 from app.services.token_counter import TokenCounter, compute_budget, text_of
-from app.tools.registry import build_tools
 
 logger = logging.getLogger("knowweave.context")
 
@@ -471,8 +470,19 @@ class ContextManager:
 
 
 def measure_system_prefix(counter: TokenCounter, session_factory=None) -> int:
-    tools = build_tools(session_factory, 0)
-    schemas = [convert_to_openai_tool(tool) for tool in tools]
+    from app.tools.builtin import register_builtins
+    from app.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    register_builtins(registry)
+    schemas = [
+        convert_to_openai_tool({
+            "name": d.name,
+            "description": d.description,
+            "parameters": d.parameters,
+        })
+        for d in registry.snapshot().values()
+    ]
     schema_text = json.dumps(schemas, ensure_ascii=False, sort_keys=True)
     return counter.count_text(SYSTEM_PROMPT) + counter.count_text(schema_text)
 

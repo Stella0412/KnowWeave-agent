@@ -1,6 +1,13 @@
+"""ch08 业务工具的数据访问与检索助手。
+
+内置工具的注册与 execute 适配迁移到 app/tools/builtin.py；这里保留仍被
+routers、脚本与直接单测使用的数据访问助手：订单查询、FAQ 检索、建单落库。
+query_logistics 已移交 MCP Server，query_product / submit_refund 已整体迁入
+builtin.py，不再以 @tool 形式暴露。
+"""
+
 import asyncio
 import logging
-import random
 from typing import Literal
 
 from langchain_core.tools import BaseTool, tool
@@ -35,32 +42,6 @@ def build_query_order(session_factory) -> BaseTool:
         )
 
     return query_order
-
-
-@tool
-async def submit_refund(order_no: str) -> str:
-    """提交退款单。仅当判断这一单符合退款条件时调用；前端会展示退款表单。"""
-    return f"已准备退款单：{order_no}"
-
-
-@tool
-async def query_product(product_name: str) -> str:
-    """查询商品信息。当用户询问商品价格、多少钱、库存、规格时调用。"""
-    return (
-        f"商品「{product_name}」：价格=¥{random.randint(9, 999)}，"
-        f"库存={random.randint(0, 500)}件，规格=标准款"
-    )
-
-
-@tool
-async def query_logistics(tracking_no: str) -> str:
-    """查询物流信息。入参必须是 query_order 返回的物流单号（如 SF1001CN），不是订单号。"""
-    carriers = ["中通", "圆通", "顺丰", "韵达"]
-    nodes = ["已揽收", "运输中", "到达转运中心", "派送中"]
-    return (
-        f"物流单号 {tracking_no} 物流：承运商={random.choice(carriers)}，"
-        f"当前节点={random.choice(nodes)}，预计3日内送达"
-    )
 
 
 def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseTool:

@@ -2,9 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
 
-import app.graph.agent as agent_module
 from app.db.repository import ChatRepository
 from app.graph.agent import agent_llm, agent_tools
 from app.graph.routing import make_should_continue
@@ -28,7 +26,7 @@ class FakeAgentModel:
         self.seen = []
 
     def bind_tools(self, tools):
-        self.bound_tools = [t.name for t in tools]
+        self.bound_tools = [t["name"] for t in tools]
         return self
 
     async def ainvoke(self, messages):
@@ -63,6 +61,10 @@ def _state(**overrides):
         "tokens_used": 0,
         "suggested_actions": [],
         "citations": [],
+        "pending_tool_calls": [],
+        "tool_cursor": 0,
+        "tool_tokens_used": 0,
+        "refund_offered": None,
         "trace": {},
     }
     state.update(overrides)
@@ -122,13 +124,14 @@ async def test_agent_llm_keeps_answer_none_when_tool_calls():
 
 @pytest.mark.asyncio
 async def test_agent_llm_binds_full_tool_set_on_knowledge_route():
-    # 绑定不再按路由裁剪：固定 6 个工具逐字稳定，路由差异只由执行端白名单决定。
+    # 绑定不再按路由裁剪：固定 5 个内置工具逐字稳定（query_logistics 已移交 MCP），
+    # 路由差异只由执行端守卫决定。
     model = FakeAgentModel(AIMessage(content="直接回答"))
     runtime = _runtime()
     runtime.context.model = model
     await agent_llm(_state(route="knowledge", evidence="[1] 证据"), runtime)
     assert model.bound_tools == [
-        "query_order", "query_product", "query_logistics",
+        "query_order", "query_product",
         "query_faq", "submit_refund", "create_ticket",
     ]
 
@@ -140,7 +143,9 @@ async def test_agent_tools_executes_business_tool(session_factory):
         AIMessage(content="", tool_calls=[
             {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
         ]),
-    ])
+    ], pending_tool_calls=[
+        {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}
+    ], tool_cursor=0)
     runtime = _runtime(session_factory)
     update = await agent_tools(state, runtime)
     assert isinstance(update["messages"][0], ToolMessage)
@@ -163,6 +168,12 @@ async def test_agent_tools_intercepts_create_ticket(session_factory):
                 "id": "c1", "type": "tool_call",
             }]),
         ],
+        pending_tool_calls=[{
+            "name": "create_ticket",
+            "args": {"description": "商品破损", "ticket_type": "售后"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
     assert update["suggested_actions"][0]["type"] == "create_ticket"
@@ -184,7 +195,11 @@ async def test_agent_tools_rejects_bad_ticket_args(session_factory):
             "args": {"description": "缺类型"},
             "id": "c1", "type": "tool_call",
         }]),
-    ])
+    ], pending_tool_calls=[{
+        "name": "create_ticket",
+        "args": {"description": "缺类型"},
+        "id": "c1", "type": "tool_call",
+    }], tool_cursor=0)
     update = await agent_tools(state, _runtime(session_factory))
     assert update["suggested_actions"] == []
     assert "参数校验失败" in update["messages"][0].content
@@ -192,6 +207,7 @@ async def test_agent_tools_rejects_bad_ticket_args(session_factory):
 
 @pytest.mark.asyncio
 async def test_agent_tools_dedupes_ticket_actions(session_factory):
+    # 一条 AIMessage 的重复 create_ticket 调用逐节点执行，跨节点合并动作仍去重。
     call = {
         "name": "create_ticket",
         "args": {"description": "商品破损", "ticket_type": "售后"},
@@ -200,30 +216,33 @@ async def test_agent_tools_dedupes_ticket_actions(session_factory):
     state = _state(
         route="business",
         messages=[HumanMessage(content="建工单"), AIMessage(content="", tool_calls=[call, {**call, "id": "c2"}])],
+        pending_tool_calls=[call, {**call, "id": "c2"}],
+        tool_cursor=0,
     )
-    update = await agent_tools(state, _runtime(session_factory))
-    assert len(update["suggested_actions"]) == 1
+    first = await agent_tools(state, _runtime(session_factory))
+    assert len(first["suggested_actions"]) == 1
+
+    state["messages"] = state["messages"] + first["messages"]
+    state["tool_cursor"] = first["tool_cursor"]
+    state["tool_tokens_used"] = first["tool_tokens_used"]
+    state["suggested_actions"] = first["suggested_actions"]
+    second = await agent_tools(state, _runtime(session_factory))
+    assert len(second["suggested_actions"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_agent_tools_keeps_existing_citations(session_factory, monkeypatch):
-    @tool
-    async def query_order(order_id: str) -> str:
-        """探测工具。"""
-        return "ok"
-
+async def test_agent_tools_keeps_existing_citations(session_factory):
     runtime = _runtime(session_factory)
     runtime.context.turn.citations.append({"n": 1, "chunk_id": 7})
-
-    def fake_build_tools(*args, **kwargs):
-        return [query_order]
-
-    monkeypatch.setattr(agent_module, "build_tools", fake_build_tools)
     state = _state(
         route="business",
         messages=[HumanMessage(content="查"), AIMessage(content="", tool_calls=[
             {"name": "query_order", "args": {"order_id": "1"}, "id": "c1", "type": "tool_call"}
         ])],
+        pending_tool_calls=[
+            {"name": "query_order", "args": {"order_id": "1"}, "id": "c1", "type": "tool_call"}
+        ],
+        tool_cursor=0,
         citations=[{"n": 2, "chunk_id": 9}],
     )
     update = await agent_tools(state, runtime)

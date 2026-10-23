@@ -116,6 +116,9 @@ class ChatService:
         context_manager: ContextManager | None = None,
         summary_service: SummaryService | None = None,
         counter: TokenCounter | None = None,
+        registry=None,
+        provider=None,
+        engine=None,
     ):
         self._settings = settings or default_settings
         self._counter = counter or TokenCounter(
@@ -135,6 +138,29 @@ class ChatService:
         self._intent_mode = intent_mode
         self._context_manager = context_manager
         self._summary_service = summary_service
+        self._registry, self._provider, self._engine = self._resolve_tool_runtime(
+            registry, provider, engine,
+        )
+
+    def _resolve_tool_runtime(self, registry, provider, engine):
+        from app.tools.audit import write_audit
+        from app.tools.builtin import register_builtins
+        from app.tools.executor import ToolEngine
+        from app.tools.policy import PolicyStore
+        from app.tools.registry import ToolRegistry, tool_timeout
+
+        if registry is None:
+            registry = ToolRegistry()
+            register_builtins(registry)
+        if engine is None:
+            policy = PolicyStore(self._settings.tool_permissions_path)
+            engine = ToolEngine(
+                policy,
+                lambda record: write_audit(self._session_factory, record),
+                timeout=lambda name: tool_timeout(name, self._settings.tool_timeout),
+                retries=self._settings.tool_retries,
+            )
+        return registry, provider, engine
 
     def _context(self, turn: TurnContext) -> GraphContext:
         return GraphContext(
@@ -153,6 +179,9 @@ class ChatService:
             budget=self._budget,
             tool_result_max_tokens=self._settings.tool_result_max_tokens,
             settings=self._settings,
+            registry=self._registry,
+            provider=self._provider,
+            engine=self._engine,
         )
 
     async def shutdown(self) -> None:
@@ -482,7 +511,9 @@ def _messages_of(update):
     return [m for m in update.get("messages") or [] if isinstance(m, AIMessage)]
 
 
-def build_chat_service(graph, *, settings=None, session_factory):
+def build_chat_service(
+    graph, *, settings=None, session_factory, registry=None, provider=None, engine=None
+):
     from app.core.llm import build_chat_model, build_structured_model
     from app.prompts.context import SummaryOutput
     from app.prompts.orchestrator import CorefOutput, ExpansionOutput, IntentOutput
@@ -527,4 +558,7 @@ def build_chat_service(graph, *, settings=None, session_factory):
         context_manager=manager,
         summary_service=summary_service,
         counter=counter,
+        registry=registry,
+        provider=provider,
+        engine=engine,
     )

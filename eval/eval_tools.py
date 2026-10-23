@@ -15,13 +15,19 @@ from app.config import settings
 from app.core.llm import build_chat_model
 from app.db.engine import create_session_factory
 from app.prompts.customer_service import SYSTEM_PROMPT
-from app.tools.registry import build_tools
+from app.tools.builtin import register_builtins
+from app.tools.registry import ToolRegistry
 
 
 async def main():
     model = build_chat_model(settings)
     sf = create_session_factory("sqlite+aiosqlite:///:memory:")
-    tools = build_tools(sf, 1)
+    registry = ToolRegistry()
+    register_builtins(registry)
+    tools = [
+        {"name": d.name, "description": d.description, "parameters": d.parameters}
+        for d in registry.snapshot().values()
+    ]
     bound = model.bind_tools(tools)
     with open("eval/samples_tools.jsonl", encoding="utf-8") as f:
         samples = [json.loads(line) for line in f if line.strip()]

@@ -8,9 +8,7 @@ from app.tools.business import (
     build_query_faq,
     build_query_order,
     create_ticket_record,
-    query_logistics,
 )
-from app.tools.registry import build_tools
 
 
 @pytest.mark.asyncio
@@ -19,11 +17,6 @@ async def test_query_order_reads_seeded_table(session_factory):
     out = await build_query_order(session_factory).ainvoke({"order_id": "1001"})
     assert "1001" in out
     assert "物流单号=SF1001CN" in out
-
-
-def test_query_logistics_schema_requires_tracking_no():
-    with pytest.raises(Exception):
-        query_logistics.args_schema.model_validate({"order_id": "1001"})
 
 
 @pytest.mark.asyncio
@@ -71,15 +64,6 @@ async def test_create_ticket_record_can_skip_escalation(session_factory):
     async with session_factory() as session:
         conv = await ChatRepository(session).get_conversation(cid)
     assert conv.status is ConversationStatus.ACTIVE
-
-
-@pytest.mark.asyncio
-async def test_build_tools_has_six_tools_in_static_order(session_factory):
-    tools = build_tools(session_factory, 1)
-    assert [t.name for t in tools] == [
-        "query_order", "query_product", "query_logistics",
-        "query_faq", "submit_refund", "create_ticket",
-    ]
 
 
 def test_tool_timeout_gives_query_faq_a_longer_budget(monkeypatch):
