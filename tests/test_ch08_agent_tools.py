@@ -14,6 +14,7 @@ from app.graph.build import build_graph
 from app.graph.state import GraphContext
 from app.rag.pipeline import TurnContext
 from app.services.token_counter import TokenCounter
+import app.tools.builtin as builtin_module
 from app.tools.builtin import build_tool_snapshot, register_builtins
 from app.tools.contracts import ToolDefinition, ToolOutcome
 from app.tools.registry import ToolRegistry
@@ -358,6 +359,60 @@ async def test_submit_refund_ineligible_denied_and_audited(session_factory):
         rows = (await session.execute(select(ToolAuditLog))).scalars().all()
     assert len(rows) == 1
     assert rows[0].status.value == "权限拒绝"
+
+
+# 6b. submit_refund 路由守卫在前：refund_flow+after_sale 只允许 create_ticket，即便订单已选且符合资格也拦下
+
+async def test_submit_refund_route_guard_blocks_after_sale_and_business(session_factory, monkeypatch):
+    registry = ToolRegistry()
+    invoked = []
+    real_submit_refund = builtin_module._submit_refund
+
+    async def spy_submit_refund(arguments, context):
+        invoked.append(arguments)
+        return await real_submit_refund(arguments, context)
+
+    monkeypatch.setattr(builtin_module, "_submit_refund", spy_submit_refund)
+    register_builtins(registry)
+
+    signed = (datetime.now() - timedelta(days=3)).isoformat()
+    eligible = {"order_no": "1001", "product_name": "猫爬架", "status": "已签收",
+                "product_type": "普通", "signed_at": signed}
+
+    def submit_call():
+        return {"name": "submit_refund", "args": {"order_no": "1001"},
+                "id": "c1", "type": "tool_call"}
+
+    # after_sale：订单合格但路由白名单不允许 submit_refund → 拒单、无表单、invoke 零次
+    state = _state(
+        route="refund_flow", intent="after_sale", order_no="1001", order_data=eligible,
+        pending_tool_calls=[submit_call()], tool_cursor=0,
+    )
+    update = await agent_tools(state, _runtime(registry=registry, session_factory=session_factory))
+    assert update["suggested_actions"] == []
+    assert update["refund_offered"] is False
+    assert "本轮不允许调用 submit_refund" in update["messages"][0].content
+    assert invoked == []
+
+    # refund_return：同一状态允许 → 仍产出表单且 invoke 一次
+    state2 = _state(
+        route="refund_flow", intent="refund_return", order_no="1001", order_data=eligible,
+        pending_tool_calls=[submit_call()], tool_cursor=0,
+    )
+    update2 = await agent_tools(state2, _runtime(registry=registry, session_factory=session_factory))
+    assert update2["suggested_actions"][0]["type"] == "refund_form"
+    assert update2["refund_offered"] is True
+    assert len(invoked) == 1
+
+    # business：路由不允许 → 拒单、invoke 仍只一次
+    state3 = _state(
+        route="business", intent="order", order_no="1001", order_data=eligible,
+        pending_tool_calls=[submit_call()], tool_cursor=0,
+    )
+    update3 = await agent_tools(state3, _runtime(registry=registry, session_factory=session_factory))
+    assert update3["suggested_actions"] == []
+    assert "本轮不允许调用 submit_refund" in update3["messages"][0].content
+    assert len(invoked) == 1
 
 
 # —— 图级测试夹具 ——

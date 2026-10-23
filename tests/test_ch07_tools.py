@@ -58,7 +58,7 @@ def _state(route, intent, calls):
 
 @pytest.mark.asyncio
 async def test_blocked_submit_refund_never_creates_form():
-    # 业务路由下没有已确认订单：submit_refund 专属守卫（订单一致 + 退款资格）拦下，不产出表单。
+    # 业务路由不在 submit_refund 白名单内：路由守卫在前拦下，不产出表单。
     state = _state("business", "refund_return", [{
         "name": "submit_refund", "args": {"order_no": "1001"},
         "id": "c1", "type": "tool_call",
@@ -66,7 +66,7 @@ async def test_blocked_submit_refund_never_creates_form():
     update = await agent_module.agent_tools(state, _runtime())
     assert update["suggested_actions"] == []
     assert update["refund_offered"] is False
-    assert "不能生成表单" in update["messages"][0].content
+    assert "本轮不允许调用 submit_refund" in update["messages"][0].content
 
 
 @pytest.mark.asyncio

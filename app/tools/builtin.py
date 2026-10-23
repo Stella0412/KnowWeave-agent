@@ -33,6 +33,19 @@ def _route_guard(name: str):
     return guard
 
 
+def _compose_guards(*guards):
+    """按顺序组合守卫：第一个返回非 None（拦截）即短路返回，全部 None 才放行。"""
+
+    def guard(arguments, context):
+        for fn in guards:
+            result = fn(arguments, context)
+            if result is not None:
+                return result
+        return None
+
+    return guard
+
+
 def _refund_form_action(order_data: dict, order_no: str) -> dict:
     return {
         "type": "refund_form",
@@ -154,7 +167,7 @@ def register_builtins(registry) -> None:
         parameters={"type": "object", "properties": {"order_no": {"type": "string"}},
                     "required": ["order_no"]},
         source="builtin", server=None, original_name=None, invoke=_submit_refund,
-        effect="read", guard=_submit_refund_guard,
+        effect="read", guard=_compose_guards(_route_guard("submit_refund"), _submit_refund_guard),
     ))
     registry.register(ToolDefinition(
         name="create_ticket", description="创建人工工单。当用户投诉、维权、或要求转人工等需要人工介入时调用。",
