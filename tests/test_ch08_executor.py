@@ -196,6 +196,27 @@ async def test_read_not_found_no_retry(engine, register_tool, context, audits):
     assert parsed["category"] == "not_found"
 
 
+async def test_read_returned_fault_audited_as_failure(engine, register_tool, context, audits):
+    calls = []
+
+    async def handler(arguments, ctx):
+        calls.append(1)
+        return ToolOutcome("fault", data=None, message="上游业务错误")
+
+    definitions = register_tool("t", handler)
+    message = await engine.execute({"id": "c1", "name": "t", "args": {}}, context, definitions)
+
+    parsed = json.loads(message.content)
+    assert parsed["category"] == "fault"
+    assert parsed["ok"] is False
+
+    record = audits[-1]
+    assert record.status == "失败"
+    assert record.error_message == "上游业务错误"
+    assert record.retry_count == 0
+    assert len(calls) == 1
+
+
 async def test_read_permanent_error(engine, register_tool, context, audits):
     calls = []
 

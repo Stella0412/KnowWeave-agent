@@ -205,6 +205,9 @@ class ToolEngine:
 
         if succeeded:
             outcome = result if isinstance(result, ToolOutcome) else ToolOutcome("success", data=result)
+            if outcome.category == "fault":
+                # 处理器正常返回的 fault 是业务失败而非异常：记失败、不重试。
+                return outcome, "失败", outcome.message or "工具返回失败", retry_count
             return outcome, "成功", None, retry_count
 
         if isinstance(last_error, (TimeoutError, asyncio.TimeoutError)):
