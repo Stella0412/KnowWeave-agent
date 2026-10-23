@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     tool_timeout: float = 5.0
     tool_retries: int = 1
 
+    # ch08 MCP 工具端点与本地授权配置（无密钥；动态发现/授权消费）
+    mcp_logistics_url: str = "http://127.0.0.1:8101/mcp"
+    mcp_after_sales_url: str = "http://127.0.0.1:8102/mcp"
+    tool_permissions_path: str = "config/tool_permissions.json"
+    mcp_discovery_timeout: float = 3.0
+
     # 嵌入模型（BGE-M3 via 硅基流动 OpenAI 兼容端点）
     # 仓库 .env / .env.example 用的是 EMBEDDING_*（沿用仓库既有约定），与字段名 embed_* 不同名 →
     # 显式给 alias，否则会静默读到空 key（EMBEDDING_API_KEY 匹配不上 embed_api_key）。
