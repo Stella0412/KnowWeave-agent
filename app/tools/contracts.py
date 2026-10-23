@@ -66,3 +66,7 @@ class AuditRecord:
     error_message: str | None
     retry_count: int
     duration_ms: int
+
+
+class TransientToolError(Exception):
+    """暂时性工具故障（限流、上游临时不可用等），读工具可安全重试。"""
