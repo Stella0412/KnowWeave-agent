@@ -78,6 +78,37 @@ def test_standalone_negation_produces_no_evidence():
     assert update_ticket_request(None, 1, "不要帮我建工单") is None
 
 
+@pytest.mark.parametrize("marker", ["不用了", "不要了", "算了", "取消", "撤销", "撤回"])
+def test_bare_withdrawal_after_active_is_cancelled(marker):
+    first = update_ticket_request(None, 1, "帮我建个工单")
+    assert first.status == "active"
+    cancelled = update_ticket_request(first, 2, marker)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert cancelled.message_id == 2
+
+
+@pytest.mark.parametrize("marker", ["算了", "不用了", "不要了", "取消"])
+def test_standalone_bare_withdrawal_without_prior_is_none(marker):
+    # 没有 active 前值时，裸撤回只是寒暄/终止语，不产生任何证据。
+    assert update_ticket_request(None, 1, marker) is None
+
+
+def test_new_explicit_request_wins_over_bare_withdrawal():
+    first = update_ticket_request(None, 1, "帮我建个工单")
+    revived = update_ticket_request(first, 3, "算了，还是帮我建个工单吧")
+    assert revived.status == "active"
+    assert revived.message_id == 3
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["能不能帮我建个工单", "可否帮我建个工单", "是否帮我建个工单", "是不是要帮我建个工单"],
+)
+def test_extended_question_markers_return_none(text):
+    assert update_ticket_request(None, 1, text) is None
+
+
 def test_consumed_never_reused_even_with_filler():
     consumed = TicketRequestEvidence(message_id=1, quote="帮我建个工单", status="consumed")
     assert update_ticket_request(consumed, 2, "收到货了") is None

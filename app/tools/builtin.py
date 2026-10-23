@@ -170,7 +170,7 @@ def register_builtins(registry) -> None:
         effect="read", guard=_compose_guards(_route_guard("submit_refund"), _submit_refund_guard),
     ))
     registry.register(ToolDefinition(
-        name="create_ticket", description="创建人工工单。当用户投诉、维权、或要求转人工等需要人工介入时调用。",
+        name="create_ticket", description="创建人工工单。仅当用户明确要求建单（例如「帮我建个工单」「给我建工单」）时调用；仅描述问题、投诉或询问怎么建单都不是建单请求，不要调用。",
         parameters={"type": "object", "properties": {
             "description": {"type": "string"},
             "ticket_type": {"type": "string", "enum": ["售后", "投诉", "咨询"]},

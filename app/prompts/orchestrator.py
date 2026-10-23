@@ -161,19 +161,19 @@ AGENT_SYSTEM_ADDENDUM_KNOWLEDGE = """【本轮是知识类问题】
 - 下面已经给出本轮强制检索到的证据；不要再调用 query_faq。
 - 只依据证据回答，引用编号沿用 [n] 规则；证据没有的数字、条件、时限不要补。
 - 如果还需要订单/物流等业务数据，可以调用 query_order / logistics_query_logistics / query_product。
-- 需要人工介入时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。"""
+- 仅当用户明确要求建单时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。仅描述问题、投诉或询问怎么建单不是建单请求。"""
 
 AGENT_SYSTEM_ADDENDUM_BUSINESS = """【本轮是业务数据类问题】
 - 订单、物流、商品信息必须调用对应工具查询后再回答，不要凭记忆编造。
 - 查询物流前，如果只有订单号，先调用 query_order 拿到物流单号，再调用 logistics_query_logistics。
-- 需要人工介入时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。
+- 仅当用户明确要求建单时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。
 - 普通咨询不要建议转人工。"""
 
 AGENT_SYSTEM_ADDENDUM_LOGISTICS = """【本轮是物流查询】
 - 用户问的是包裹什么时候送到，不是退款到账时间；不要答退款到账。
 - 本轮必须重新调用 logistics_query_logistics 取最新节点（历史里查过也要再查）；只有订单号时先 query_order 拿物流单号。
 - 只依据本轮工具返回的节点回答；不要复述历史里的物流结果当最新结果，也不要承诺具体送达时间。
-- 需要人工介入时调用 create_ticket；普通咨询不要建议转人工。"""
+- 仅当用户明确要求建单时调用 create_ticket；普通咨询不要建议转人工。"""
 
 
 AGENT_SYSTEM_ADDENDUM_REFUND = """【本轮是退款判定】
@@ -191,8 +191,9 @@ AGENT_SYSTEM_ADDENDUM_REFUND = """【本轮是退款判定】
 AGENT_SYSTEM_ADDENDUM_AFTER_SALE = """【本轮是售后判定】
 - 订单数据和售后政策证据已经备齐；不要再调用 query_order / query_faq。
 - 只判断「这一单能不能走对应售后处理」（发票/保修/补发/破损等），依据是订单字段与政策证据。
-- 能处理 → 调用 create_ticket，ticket_type 必须是「售后」；不能处理 → 说明依据并建议人工。
-- 不要调用 submit_refund。"""
+- 不要调用 submit_refund。
+- 用户明确要求建单时才调用 create_ticket，ticket_type 必须是「售后」；仅描述问题或投诉本身不是建单请求。
+- 用户明确要求建单但还没给出问题描述时，先请用户补充描述，不要凭空编造；不能处理 → 说明依据并建议人工。"""
 
 AGENT_SYSTEM_ADDENDUM_CLARIFY = """【本轮意图不明确，需要澄清】
 - 先问一个最关键的澄清问题，不要猜用户意图，不要硬塞退款/物流等业务结论。

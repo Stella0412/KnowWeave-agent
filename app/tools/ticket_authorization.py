@@ -42,13 +42,20 @@ _THIRD_PARTY = re.compile(
 _CONDITIONAL = re.compile(r"(如果|假如|要是|倘若|若|万一|一旦|的话).{0,12}" + _TICKET)
 
 # 疑问句（询问怎么建单 / 确认含义等，不是授权）
-_QUESTION = re.compile(r"(怎么|如何|为什么|什么|是什么意思|怎么样|干嘛|为啥|是怎样|吗|呢)")
+_QUESTION = re.compile(
+    r"(能不能|可否|是否|是不是|多久|怎么|如何|为什么|什么|是什么意思|怎么样|干嘛|为啥|是怎样|吗|呢)"
+)
 
 # 否定 / 撤回：明确「不建」「别建」「取消建单」等
 _NEGATED = re.compile(r"(不要|不用|别|不需要|不必|无需|别想|休想).{0,6}" + _TICKET)
 _WITHDRAWAL = re.compile(
     r"(算了|要不|那)?(不要建|不用建|别建|不建)(工单|单|了)?"
     r"|(取消|撤销|撤回)(建单|工单|单)"
+)
+# 裸撤回：没有建单动词、独立成词的「不用了 / 不要了 / 算了 / 取消 / 撤销 / 撤回」。
+# 用「后面跟标点/空白/结尾」限定，避免把「不用客气」这类含「不用」的非撤回文本误判。
+_BARE_WITHDRAWAL = re.compile(
+    r"(不用|不要|算了|取消|撤销|撤回)(了|啦|吧|哦|哈)?(?=[，。！？!?\s]|$)"
 )
 
 
@@ -99,7 +106,9 @@ def _explicit_request_match(text: str) -> re.Match | None:
 def _is_explicit_request(text: str) -> bool:
     if _explicit_request_match(text) is None:
         return False
-    # 排除：引用他人原话 / 第三人称转述 / 条件句 / 疑问句
+    # 排除：否定（不要帮我建工单）/ 引用他人原话 / 第三人称转述 / 条件句 / 疑问句
+    if _NEGATED.search(text):
+        return False
     if _QUOTE_CHAR.search(text):
         return False
     if _THIRD_PARTY.search(text):
@@ -128,10 +137,19 @@ def update_ticket_request(previous, message_id, user_text):
     prev = _coerce(previous)
     prev_active = prev if (prev is not None and prev.status == "active") else None
 
-    # 1. 否定 / 撤回：有 active 前值则置 cancelled；否则（孤立否定）不产生证据。
-    withdrawal = _WITHDRAWAL.search(text)
-    if withdrawal is None:
-        withdrawal = _NEGATED.search(text)
+    # 1. 新的明确请求优先：「算了，还是帮我建个工单吧」里新请求胜出，开启新 active。
+    #    （否定建单在 _is_explicit_request 里已被排除，不落到这里。）
+    request_match = _explicit_request_match(text)
+    if request_match is not None and _is_explicit_request(text):
+        return TicketRequestEvidence(
+            message_id=message_id,
+            quote=_excerpt(text, request_match),
+            status="active",
+        )
+
+    # 2. 否定建单（不要帮我建工单 / 不用建工单）或动词式撤回（算了不建工单 / 不要建了）。
+    #    有 active 前值 → cancelled；孤立否定（无前值）→ 不产生证据。
+    withdrawal = _WITHDRAWAL.search(text) or _NEGATED.search(text)
     if withdrawal is not None:
         if prev_active is not None:
             return TicketRequestEvidence(
@@ -141,18 +159,16 @@ def update_ticket_request(previous, message_id, user_text):
             )
         return None
 
-    # 2. 明确请求 → 新的 active 证据（consumed/cancelled 不会被补充文本复用，
-    #    但新的明确请求总是开启新证据）。
-    request_match = _explicit_request_match(text)
-    if request_match is not None and _is_explicit_request(text):
-        return TicketRequestEvidence(
-            message_id=message_id,
-            quote=_excerpt(text, request_match),
-            status="active",
-        )
-
-    # 3. 补充描述 / 一般文本：保留既有 active 证据（message_id 与 quote 不变）。
+    # 3. 裸撤回（不用了 / 不要了 / 算了 / 取消 / 撤销 / 撤回）：有 active 前值即失效。
     if prev_active is not None:
+        bare = _BARE_WITHDRAWAL.search(text)
+        if bare is not None:
+            return TicketRequestEvidence(
+                message_id=message_id,
+                quote=_excerpt(text, bare),
+                status="cancelled",
+            )
+        # 4. 补充描述 / 一般文本：保留既有 active 证据（message_id 与 quote 不变）。
         return prev_active
 
     return None

@@ -32,6 +32,7 @@ from app.core.llm import build_chat_model
 from app.db.base import Base
 from app.db.models import Ticket
 from app.db.repository import ChatRepository
+from app.prompts.context import _route_addendum
 from app.prompts.customer_service import SYSTEM_PROMPT
 from app.tools.builtin import register_builtins
 from app.tools.registry import ToolRegistry
@@ -42,9 +43,15 @@ CASES_PATH = Path(__file__).resolve().parent / "ch08_ticket_cases.json"
 SECURITY_CATEGORIES = {"否定", "引用", "条件句"}
 
 # 模型「请用户补充描述」的文本信号（启发式，只用于把模型输出归类，不参与授权）
-_ASK_DESCRIPTION_MARKERS = (
-    "描述", "请补充", "补充一下", "具体", "详细", "什么问题", "请问",
-)
+_ASK_DESCRIPTION_MARKERS = ("描述", "补充", "详细", "什么问题", "什么情况")
+
+
+def _addendum_block(route: str, intent: str | None) -> str:
+    """复用生产的路由 addendum 选择器，避免在评估器里复制 Prompt 字符串。"""
+    addendum = _route_addendum(route, intent)
+    if not addendum:
+        return ""
+    return f"【本轮路由】\n{addendum}"
 
 
 def _text_of(content) -> str:
@@ -78,16 +85,26 @@ def _blocked_reason() -> str | None:
     return None
 
 
-async def _run_case(bound, turns: list[str]) -> str:
-    """喂真实模型跑一个会话的多轮，返回最后一轮的归类。"""
-    messages = [SystemMessage(content=SYSTEM_PROMPT)]
+async def _run_case(bound, case: dict) -> str:
+    """喂真实模型跑一个会话的多轮，返回最后一轮的归类。
+
+    与生产一致：只有「当前轮」携带该 case 路由对应的 addendum（system prompt 之外），
+    历史轮保留用户原话、不重复注入 addendum。
+    """
+    route = case.get("route") or "business"
+    intent = case.get("intent")
+    block = _addendum_block(route, intent)
+    history: list = [SystemMessage(content=SYSTEM_PROMPT)]
     observed = "no_chat_ticket"
-    for turn in turns:
-        messages.append(HumanMessage(content=turn))
+    for turn in case["turns"]:
+        messages = list(history)
+        content = turn + ("\n\n" + block if block else "")
+        messages.append(HumanMessage(content=content))
         ai = await bound.ainvoke(messages)
         observed = _classify(ai)
-        # 历史里只保留纯文本回复，避免悬挂 tool_calls 干扰后续轮
-        messages.append(AIMessage(content=_text_of(getattr(ai, "content", ""))))
+        # 历史按生产语义存原始话术（不含 addendum），只保留纯文本回复
+        history.append(HumanMessage(content=turn))
+        history.append(AIMessage(content=_text_of(getattr(ai, "content", ""))))
     return observed
 
 
@@ -110,6 +127,11 @@ async def run_intent() -> int:
         for d in registry.snapshot().values()
     ]
     bound = model.bind_tools(tools)
+
+    create_desc = next(
+        (d["description"] for d in tools if d["name"] == "create_ticket"), ""
+    )
+    print(f"绑定 create_ticket 描述: {create_desc}")
 
     cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
 
@@ -141,7 +163,7 @@ async def run_intent() -> int:
     security_violations = []
     for case, final_evidence in prepared:
         try:
-            observed = await _run_case(bound, case["turns"])
+            observed = await _run_case(bound, case)
         except Exception as exc:  # noqa: BLE001
             await engine.dispose()
             print(f"BLOCKED: 真实模型调用失败（{case['id']}）: {exc}")
