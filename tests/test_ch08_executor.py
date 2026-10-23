@@ -402,3 +402,19 @@ async def test_non_object_args_fail_validation(engine, register_tool, context, a
     assert calls == []
     assert audits[-1].status == "校验拦下"
     assert json.loads(message.content)["category"] == "invalid_arguments"
+
+
+async def test_audit_uses_trusted_context_tool_call_id(engine, register_tool, audits):
+    async def handler(arguments, ctx):
+        return ToolOutcome("success", data={"ok": 1})
+
+    definitions = register_tool("t", handler)
+    ctx = ExecutionContext(conversation_id=42, tool_call_id="trusted-call-id")
+    message = await engine.execute({"id": "model-call-id", "name": "t", "args": {}},
+                                   ctx, definitions)
+
+    # 回给模型的 ToolMessage 仍用模型 call id 以便关联；审计必须落可信上下文 id
+    assert message.tool_call_id == "model-call-id"
+    record = audits[-1]
+    assert record.tool_call_id == "trusted-call-id"
+    assert record.conversation_id == 42

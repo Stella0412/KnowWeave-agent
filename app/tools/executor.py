@@ -233,7 +233,7 @@ class ToolEngine:
         content = format_outcome(outcome)
         record = AuditRecord(
             conversation_id=context.conversation_id,
-            tool_call_id=call_id,
+            tool_call_id=context.tool_call_id,
             tool_name=name,
             tool_source=definition.source if definition is not None else "builtin",
             mcp_server=definition.server if definition is not None else None,
