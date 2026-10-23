@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -291,3 +292,51 @@ class FaithCase(Base):
     )
     resolution: Mapped[str | None] = mapped_column(String(300), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AuditStatus(str, enum.Enum):
+    """工具调用终态，五个中文取值与用户 DDL 的 ENUM 一致。"""
+
+    SUCCESS = "成功"
+    FAILURE = "失败"
+    TIMEOUT = "超时"
+    VALIDATION_BLOCKED = "校验拦下"
+    PERMISSION_DENIED = "权限拒绝"
+
+
+class ToolSource(str, enum.Enum):
+    BUILTIN = "builtin"
+    MCP = "mcp"
+
+
+class ToolAuditLog(Base):
+    """工具调用审计留痕：内置与 MCP 工具每次逻辑调用落一条。
+
+    审计事务独立于业务事务，因此 conversation_id 不挂外键、只建普通索引，
+    避免被引用约束拦住审计写入。
+    """
+
+    __tablename__ = "tool_audit_logs"
+    __table_args__ = (
+        Index("idx_conversation_id", "conversation_id"),
+        Index("idx_tool_name", "tool_name"),
+        Index("idx_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_source: Mapped[ToolSource] = mapped_column(
+        Enum(ToolSource, values_callable=lambda e: [m.value for m in e]), nullable=False
+    )
+    mcp_server: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    arguments: Mapped[Any] = mapped_column(JSON, nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[AuditStatus] = mapped_column(
+        Enum(AuditStatus, values_callable=lambda e: [m.value for m in e]), nullable=False
+    )
+    error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
