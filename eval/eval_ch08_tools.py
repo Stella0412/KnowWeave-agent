@@ -43,7 +43,7 @@ from app.tools.ticket_authorization import update_ticket_request
 
 CASES_PATH = Path(__file__).resolve().parent / "ch08_ticket_cases.json"
 
-SECURITY_CATEGORIES = {"否定", "引用", "条件句"}
+SECURITY_CATEGORIES = {"否定", "引用", "条件句", "撤回", "仅投诉"}
 
 # 模型「请用户补充描述」的文本信号（启发式，只用于把模型输出归类，不参与授权）
 _ASK_DESCRIPTION_MARKERS = ("描述", "补充", "详细", "什么问题", "什么情况")

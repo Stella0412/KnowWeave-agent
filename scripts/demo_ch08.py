@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import socket
 import sys
 import time
@@ -235,6 +236,7 @@ async def run_mcp() -> int:
         return 0
     finally:
         await _terminate(procs)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 async def run_hot_reload() -> int:
@@ -292,6 +294,7 @@ async def run_hot_reload() -> int:
         return 0 if "logistics_query_estimate" in after_auth else 1
     finally:
         await _terminate(procs)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 async def _app_chat_sse(base_url: str, message: str) -> list[dict]:
@@ -354,26 +357,61 @@ async def _mysql_rows():
         await engine.dispose()
 
 
-TICKET_MESSAGE = "帮我建个工单，反馈订单 1001 发货太慢"
+# 真实模型（非零温度）对建单触发语偶发改走「查订单 + 澄清」，用有限次新会话重试
+# 打开确认中断；每次都开新会话，绝不污染前一次的中断状态（与集成测试同款）。
+_TICKET_TRIGGERS = (
+    "帮我建个工单，反馈订单 1001 发货太慢",
+    "帮我建个工单，订单 1001 发货太慢，我要跟进",
+    "帮我建个工单，订单 1001 我要修改收货地址",
+)
+
+
+async def _open_ticket_interrupt(base_url: str, max_attempts: int = 6):
+    last_events: list = []
+    for i in range(max_attempts):
+        message = _TICKET_TRIGGERS[i % len(_TICKET_TRIGGERS)]
+        events = await _app_chat_sse(base_url, message)
+        last_events = events
+        session_id = None
+        session_event = _first(events, "session")
+        if session_event is not None:
+            session_id = str(session_event.get("session_id"))
+        confirmation_id = _ticket_confirmation_id(events)
+        if session_id and confirmation_id:
+            return events, session_id, confirmation_id, message
+    return last_events, None, None, None
+
+
+async def _mysql_counts():
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(MYSQL_URL)
+    try:
+        async with engine.connect() as conn:
+            tickets = (await conn.execute(text("SELECT COUNT(*) FROM tickets"))).scalar()
+            audits = (await conn.execute(text("SELECT COUNT(*) FROM tool_audit_logs"))).scalar()
+        return int(tickets), int(audits)
+    finally:
+        await engine.dispose()
 
 
 async def _run_ticket(base_url: str, decision: str) -> int:
-    events = await _app_chat_sse(base_url, TICKET_MESSAGE)
-    session_id = None
-    session_event = _first(events, "session")
-    if session_event is not None:
-        session_id = str(session_event.get("session_id"))
-    confirmation_id = _ticket_confirmation_id(events)
+    events, session_id, confirmation_id, message = await _open_ticket_interrupt(base_url)
     if not session_id or not confirmation_id:
         _emit("ticket_interrupt", session_id=session_id, confirmation_id=confirmation_id,
-              events=events[-6:])
+              trigger=message, events=events[-6:])
         print("ERROR: 未拿到 ticket_preview 中断（session_id/confirmation_id 缺失）")
         return 1
 
+    tickets_before, audits_before = await _mysql_counts()
     status, body = await _resume(base_url, session_id, confirmation_id, decision)
+    tickets_after, audits_after = await _mysql_counts()
     ticket_row, audit_rows = await _mysql_rows()
     _emit("ticket_resume", decision=decision, session_id=session_id,
-          confirmation_id=confirmation_id, http_status=status,
+          confirmation_id=confirmation_id, trigger=message, http_status=status,
+          tickets_delta=tickets_after - tickets_before,
+          audits_delta=audits_after - audits_before,
           ticket_row=ticket_row, audit_rows=audit_rows,
           sse_tail=body[-400:])
     if status != 200:
@@ -394,7 +432,8 @@ async def run_ticket(base_url: str, decision: str) -> int:
 
 
 async def run_timeouts() -> int:
-    from app.tools.contracts import ExecutionContext
+    from app.tools.contracts import ExecutionContext, ToolDefinition, ToolOutcome
+    from app.tools.executor import ToolEngine
     from app.tools.mcp_client import MCPToolProvider, create_mcp_client
     from app.tools.policy import PolicyStore
 
@@ -411,29 +450,84 @@ async def run_timeouts() -> int:
         client = create_mcp_client(Settings)
         client.connections["slow"] = {"url": f"http://127.0.0.1:{slow_port}/mcp",
                                       "transport": "streamable_http"}
-        policy_path = write_policy(tmp / "permissions_slow.json", {"slow": {"slow_read": "read"}})
-        provider = MCPToolProvider(client, PolicyStore(policy_path), discovery_timeout=3.0)
+        policy = PolicyStore(
+            write_policy(tmp / "permissions_slow.json", {"slow": {"slow_read": "read"}}))
+        provider = MCPToolProvider(client, policy, discovery_timeout=3.0)
         await _wait_ready(client, expect_slow=1)
-        tools = await provider.refresh()
-        definition = tools["slow_slow_read"]
-        ctx = ExecutionContext(conversation_id=0, tool_call_id=f"demo-{uuid.uuid4().hex[:8]}")
+        definitions = await provider.refresh()
+        slow_read = definitions["slow_slow_read"]
 
+        # 可信本地演示写工具：受控慢写，只展示写超时 retry_count=0，绝不写真实工单/库
+        write_attempts: list = []
+
+        async def slow_write(arguments, ctx):
+            write_attempts.append(arguments)
+            await asyncio.sleep(5.0)
+            return ToolOutcome("success", data={"write": arguments})
+
+        slow_write_def = ToolDefinition(
+            name="demo_slow_write", description="受控慢写工具（演示用，不写库）",
+            parameters={"type": "object",
+                        "properties": {"note": {"type": "string"}},
+                        "required": ["note"]},
+            source="builtin", server=None, original_name="demo_slow_write",
+            invoke=slow_write, effect="write",
+        )
+
+        audit_records: list = []
+
+        async def audit_writer(record):
+            audit_records.append(record)
+
+        engine = ToolEngine(policy, audit_writer, timeout=1.0, retries=2)
+        call_id = f"demo-{uuid.uuid4().hex[:8]}"
+
+        # 读工具：真实 MCP 定义经引擎执行，打印引擎审计的 status/retry_count/耗时
+        read_ctx = ExecutionContext(conversation_id=0, tool_call_id=call_id)
         started = time.perf_counter()
-        try:
-            await asyncio.wait_for(
-                definition.invoke({"tracking_no": "SLOW-1", "seconds": 5.0}, ctx),
-                timeout=1.0,
-            )
-            _emit("timeout_result", public_name="slow_slow_read", timed_out=False,
-                  elapsed_ms=int((time.perf_counter() - started) * 1000))
-            return 1  # 没超时反而不符合演示预期
-        except asyncio.TimeoutError:
-            _emit("timeout_result", public_name="slow_slow_read", timed_out=True,
-                  elapsed_ms=int((time.perf_counter() - started) * 1000),
-                  classification="超时")
-            return 0
+        read_msg = await engine.execute(
+            {"name": "slow_slow_read", "id": call_id,
+             "args": {"tracking_no": "SLOW-1", "seconds": 5.0}},
+            read_ctx, {"slow_slow_read": slow_read},
+        )
+        read_elapsed_ms = int((time.perf_counter() - started) * 1000)
+        read_audit = audit_records[-1]
+        _emit("timeout_read", public_name="slow_slow_read",
+              artifact=getattr(read_msg, "artifact", None),
+              status=read_audit.status, retry_count=read_audit.retry_count,
+              duration_ms=read_audit.duration_ms, elapsed_ms=read_elapsed_ms)
+
+        # 写工具：受控慢写经引擎执行（本地演示写，非 create_ticket），展示 retry_count=0
+        # 且只尝试一次；无任何 DB 工单写入。
+        write_ctx = ExecutionContext(conversation_id=0, tool_call_id=f"{call_id}-w")
+
+        async def _confirm(definition, arguments, context):
+            return True
+
+        write_ctx.confirmation = _confirm
+        started = time.perf_counter()
+        write_msg = await engine.execute(
+            {"name": "demo_slow_write", "id": f"{call_id}-w",
+             "args": {"note": "演示写超时"}},
+            write_ctx, {"demo_slow_write": slow_write_def},
+        )
+        write_elapsed_ms = int((time.perf_counter() - started) * 1000)
+        write_audit = audit_records[-1]
+        _emit("timeout_write", public_name="demo_slow_write",
+              artifact=getattr(write_msg, "artifact", None),
+              status=write_audit.status, retry_count=write_audit.retry_count,
+              duration_ms=write_audit.duration_ms, elapsed_ms=write_elapsed_ms,
+              attempt_count=len(write_attempts))
+
+        ok = (
+            read_audit.status == "超时" and read_audit.retry_count > 0
+            and write_audit.status == "超时" and write_audit.retry_count == 0
+            and len(write_attempts) == 1
+        )
+        return 0 if ok else 1
     finally:
         await _terminate(procs)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main() -> int:
