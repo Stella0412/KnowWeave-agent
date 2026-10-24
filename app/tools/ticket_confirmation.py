@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import asdict, dataclass
+from weakref import WeakValueDictionary
 
 from langgraph.types import interrupt
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +25,13 @@ class TicketDraft:
     ticket_type: str
     description: str
     request_message_id: int
+
+    def __post_init__(self):
+        if (self.conversation_id <= 0 or self.request_message_id <= 0
+                or not self.tool_call_id.strip() or not self.description.strip()
+                or not self.confirmation_id.strip()):
+            raise ValueError("工单草稿缺少必填数据")
+        TicketType(self.ticket_type)
 
     @classmethod
     def create(
@@ -62,6 +70,9 @@ def ticket_no_for(draft: TicketDraft) -> str:
 
 def confirm_ticket(draft: TicketDraft, context) -> bool:
     """Pause for a trusted HTTP resume decision and reject mismatched responses."""
+    if (draft.conversation_id != context.conversation_id
+            or draft.tool_call_id != context.tool_call_id):
+        raise PermissionError("工单草稿与执行上下文不一致")
     response = interrupt(
         {
             "type": "ticket_confirmation",
@@ -106,7 +117,7 @@ def _matches(row: Ticket, draft: TicketDraft) -> bool:
     )
 
 
-_ticket_locks: dict[str, asyncio.Lock] = {}
+_ticket_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _ticket_locks_guard = asyncio.Lock()
 
 
@@ -134,21 +145,22 @@ async def create_ticket_once(session_factory, draft: TicketDraft, *, escalate: b
                 ticket_type=TicketType(draft.ticket_type),
                 status=TicketStatus.PENDING,
             )
-            session.add(row)
-            if escalate:
-                conversation = await session.get(Conversation, draft.conversation_id)
-                if conversation is not None:
-                    conversation.status = ConversationStatus.ESCALATED
             try:
+                session.add(row)
+                if escalate:
+                    conversation = await session.get(Conversation, draft.conversation_id)
+                    if conversation is not None:
+                        conversation.status = ConversationStatus.ESCALATED
                 await session.commit()
                 return ticket_no
-            except IntegrityError:
+            except IntegrityError as error:
                 await session.rollback()
+                integrity_error = error
 
         async with session_factory() as session:
             existing = await session.get(Ticket, ticket_no)
             if existing is None:
-                raise TicketDraftConflict("工单唯一键冲突，但无法读取已有工单")
+                raise integrity_error
             if not _matches(existing, draft):
                 raise TicketDraftConflict("同一工具调用已存在内容不同的工单")
             return ticket_no

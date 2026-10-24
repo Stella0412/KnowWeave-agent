@@ -5,6 +5,11 @@ from sqlalchemy import func, select
 
 from app.db.models import Conversation, Ticket
 from app.tools.ticket_confirmation import TicketDraft, TicketDraftConflict, create_ticket_once
+from app.tools.ticket_confirmation import ticket_no_for
+from app.db.base import Base
+from app.db.models import TicketType, TicketStatus
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
 
 
 @pytest.fixture
@@ -60,3 +65,73 @@ async def test_concurrent_submit_creates_one_ticket(session_factory, conversatio
     assert first == second
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Ticket)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_database_collision_after_absent_lookup(tmp_path, changed):
+    """A second independent session wins between lookup and autoflush."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'collision.db'}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            conversation = Conversation(user_id="collision")
+            session.add(conversation)
+            await session.commit()
+            draft = _draft(conversation.id)
+        collisions = []
+
+        class RacingSession(AsyncSession):
+            async def get(self, entity, ident, **kwargs):
+                result = await super().get(entity, ident, **kwargs)
+                if entity is Ticket and result is None and not collisions:
+                    collisions.append(ident)
+                    async with factory() as competitor:
+                        competitor.add(Ticket(
+                            ticket_no=ident, conversation_id=draft.conversation_id,
+                            description="different" if changed else draft.description,
+                            ticket_type=TicketType(draft.ticket_type), status=TicketStatus.PENDING,
+                        ))
+                        await competitor.commit()
+                return result
+
+        racing_factory = async_sessionmaker(engine, class_=RacingSession, expire_on_commit=False)
+        if changed:
+            with pytest.raises(TicketDraftConflict):
+                await create_ticket_once(racing_factory, draft)
+        else:
+            assert await create_ticket_once(racing_factory, draft) == ticket_no_for(draft)
+        assert collisions == [ticket_no_for(draft)]
+        async with factory() as session:
+            assert await session.scalar(select(func.count()).select_from(Ticket)) == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_integrity_failure_preserves_original(session_factory, conversation_id):
+    class InvalidInsertSession(AsyncSession):
+        def add(self, instance, **kwargs):
+            if isinstance(instance, Ticket):
+                instance.description = None
+            return super().add(instance, **kwargs)
+
+    factory = async_sessionmaker(session_factory.kw["bind"], class_=InvalidInsertSession)
+    with pytest.raises(IntegrityError, match="NOT NULL constraint failed") as caught:
+        await create_ticket_once(factory, _draft(conversation_id))
+    assert caught.value.orig is not None
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Ticket)) == 0
+        assert (await session.get(Conversation, conversation_id)).status.value != "已转人工"
+
+
+@pytest.mark.asyncio
+async def test_finished_ticket_lock_is_released(session_factory, conversation_id):
+    import gc
+    from app.tools.ticket_confirmation import _ticket_locks
+    draft = _draft(conversation_id)
+    await create_ticket_once(session_factory, draft)
+    gc.collect()  # Exception tracebacks from preceding cases may retain frames until GC.
+    assert ticket_no_for(draft) not in _ticket_locks
