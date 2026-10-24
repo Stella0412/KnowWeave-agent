@@ -18,7 +18,7 @@ from langchain_core.messages import (
 )
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from app.prompts.context import build_dynamic_block
+from app.prompts.context import build_dynamic_block, ticket_request_addendum
 from app.prompts.customer_service import SYSTEM_PROMPT
 from app.services.context_manager import serialize_message, split_turns
 from app.services.token_counter import TokenCounter, text_of
@@ -107,6 +107,9 @@ async def agent_llm(state, runtime):
             f"\n【本轮已确认订单】{state['order_no']}。"
             "请仅处理这张订单，以系统提供的本轮订单数据为准。"
         )
+    ticket_hint = ticket_request_addendum(state.get("ticket_request"))
+    if ticket_hint:
+        current_text += "\n\n" + ticket_hint
     counter = getattr(context, "counter", None) or TokenCounter()
     context_settings = getattr(context, "settings", None)
     dynamic = build_dynamic_block(

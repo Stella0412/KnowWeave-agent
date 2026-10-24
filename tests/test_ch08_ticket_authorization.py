@@ -143,6 +143,35 @@ def test_quote_excerpt_is_bounded():
     assert len(ev.quote) <= 200
 
 
+# —— ticket_request_addendum：active 才产生跨轮提示，其余一律空串 ——
+
+
+def test_addendum_active_dict_produces_hint():
+    from app.prompts.context import ticket_request_addendum
+    hint = ticket_request_addendum(
+        {"message_id": 7, "quote": "帮我建个工单", "status": "active"}
+    )
+    assert "待建工单" in hint
+    assert "create_ticket" in hint
+
+
+def test_addendum_active_object_produces_hint():
+    from app.prompts.context import ticket_request_addendum
+    hint = ticket_request_addendum(TicketRequestEvidence(7, "帮我建个工单", "active"))
+    assert "待建工单" in hint
+    assert "create_ticket" in hint
+
+
+def test_addendum_non_active_evidence_empty():
+    from app.prompts.context import ticket_request_addendum
+    assert ticket_request_addendum(None) == ""
+    assert ticket_request_addendum({"status": "cancelled"}) == ""
+    assert ticket_request_addendum({"status": "consumed"}) == ""
+    assert ticket_request_addendum({}) == ""
+    assert ticket_request_addendum(TicketRequestEvidence(7, "q", "cancelled")) == ""
+    assert ticket_request_addendum(TicketRequestEvidence(7, "q", "consumed")) == ""
+
+
 # —— 状态层：ChatService 注入与隔离 ——
 
 

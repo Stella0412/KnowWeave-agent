@@ -35,7 +35,7 @@ from app.core.llm import build_chat_model
 from app.db.base import Base
 from app.db.models import Ticket
 from app.db.repository import ChatRepository
-from app.prompts.context import _route_addendum
+from app.prompts.context import _route_addendum, ticket_request_addendum
 from app.prompts.customer_service import SYSTEM_PROMPT
 from app.tools.builtin import register_builtins
 from app.tools.registry import ToolRegistry
@@ -92,22 +92,30 @@ async def _run_case(bound, case: dict) -> str:
     """喂真实模型跑一个会话的多轮，返回最后一轮的归类。
 
     与生产一致：只有「当前轮」携带该 case 路由对应的 addendum（system prompt 之外），
-    历史轮保留用户原话、不重复注入 addendum。
+    历史轮保留用户原话、不重复注入 addendum；建单证据按轮用 update_ticket_request
+    推导（消息 id 用 1 起的合成序号，只取 status），active 时经与生产相同的
+    ticket_request_addendum 追加提示，镜像生产跨轮补全。
     """
     route = case.get("route") or "business"
     intent = case.get("intent")
     block = _addendum_block(route, intent)
     history: list = [SystemMessage(content=SYSTEM_PROMPT)]
     observed = "no_chat_ticket"
-    for turn in case["turns"]:
+    previous_evidence = None
+    for index, turn in enumerate(case["turns"], start=1):
+        evidence = update_ticket_request(previous_evidence, index, turn)
+        ticket_hint = ticket_request_addendum(evidence)
         messages = list(history)
         content = turn + ("\n\n" + block if block else "")
+        if ticket_hint:
+            content += "\n\n" + ticket_hint
         messages.append(HumanMessage(content=content))
         ai = await bound.ainvoke(messages)
         observed = _classify(ai)
         # 历史按生产语义存原始话术（不含 addendum），只保留纯文本回复
         history.append(HumanMessage(content=turn))
         history.append(AIMessage(content=_text_of(getattr(ai, "content", ""))))
+        previous_evidence = evidence
     return observed
 
 

@@ -67,6 +67,26 @@ def _route_addendum(route: str, intent: str | None) -> str:
     return ""
 
 
+def ticket_request_addendum(evidence) -> str:
+    """基于服务端建单证据生成跨轮提示；非 active 一律返回空串（不注入、不授权）。
+
+    只从可信服务端状态（evidence.status == "active"）推导提示语，绝不注入证据原文
+    （用户原话）或任何模型输出；授权仍由 create_ticket 的 guard / 确认入口决定，
+    此提示只是补全跨轮记忆，告诉模型「存在一条尚未创建的建单请求」。
+    """
+    if isinstance(evidence, dict):
+        status = evidence.get("status")
+    else:
+        status = getattr(evidence, "status", None)
+    if status != "active":
+        return ""
+    return (
+        "【待建工单】用户已明确要求建单且尚未创建。"
+        "若本轮用户补充了问题描述或再次明确要求建单，请调用 create_ticket；"
+        "否则正常回答，不要调用。"
+    )
+
+
 def truncate_evidence(text: str, *, max_tokens: int, counter: TokenCounter) -> str:
     text = text or ""
     if not text or counter.count_text(text) <= max_tokens:

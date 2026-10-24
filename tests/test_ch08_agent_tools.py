@@ -144,6 +144,35 @@ async def test_runtime_registered_tool_is_bound_and_executed():
     assert update["tool_cursor"] == 1
 
 
+# 1b. active 建单证据时，agent_llm 把跨轮提示注入本轮用户文本（fill 轮补全记忆）
+
+async def test_fill_turn_surfaces_pending_ticket_hint_to_model():
+    model = FakeModel()
+    runtime = _runtime(model=model)
+    state = _state(
+        messages=[HumanMessage(content="收到的猫粮包装破损")],
+        route="refund_flow",
+        intent="after_sale",
+        ticket_request={"message_id": 7, "quote": "帮我建个工单", "status": "active"},
+    )
+    await agent_llm(state, runtime)
+    sent = model.calls[-1]
+    humans = [m for m in sent if isinstance(m, HumanMessage)]
+    assert any("待建工单" in m.content for m in humans), [m.content for m in humans]
+    assert any("create_ticket" in m.content for m in humans)
+
+
+async def test_no_active_ticket_request_omits_hint():
+    model = FakeModel()
+    runtime = _runtime(model=model)
+    state = _state(messages=[HumanMessage(content="收到的猫粮包装破损")],
+                   route="refund_flow", intent="after_sale")
+    await agent_llm(state, runtime)
+    sent = model.calls[-1]
+    humans = [m for m in sent if isinstance(m, HumanMessage)]
+    assert all("待建工单" not in m.content for m in humans)
+
+
 # 2. 伪造/未注册工具名：错误 ToolMessage + 校验拦下审计，且不触发任何处理器
 
 async def test_forged_tool_name_errors_and_audits(session_factory):
