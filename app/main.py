@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
         provider = MCPToolProvider(
             create_mcp_client(settings), policy, settings.mcp_discovery_timeout,
         )
-        engine = ToolEngine(
+        tool_engine = ToolEngine(
             policy,
             lambda record: write_audit(SessionFactory, record),
             timeout=lambda name: tool_timeout(name, settings.tool_timeout),
@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
         )
         app.state.chat_service = build_chat_service(
             app.state.graph, settings=settings, session_factory=SessionFactory,
-            registry=registry, provider=provider, engine=engine,
+            registry=registry, provider=provider, engine=tool_engine,
         )
         try:
             yield
