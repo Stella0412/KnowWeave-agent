@@ -340,6 +340,41 @@
   .order-card strong { font-size: 14px; }
   .order-card span { font-size: 12px; color: #777; }
 
+  /* ---- ch08 工单确认预览卡片 ---- */
+  .ticket-preview {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid #e4ddd2;
+    border-radius: 12px;
+    background: #fffdfa;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ticket-preview-head { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .ticket-preview-field { display: flex; gap: 8px; align-items: baseline; font-size: 13px; line-height: 1.55; }
+  .ticket-preview-label { flex: none; min-width: 56px; color: var(--muted); }
+  .ticket-preview-value { color: var(--ink); word-break: break-word; white-space: pre-wrap; }
+  .ticket-preview-actions { display: flex; gap: 8px; margin-top: 2px; }
+  .ticket-preview-btn {
+    border: 1px solid var(--brand);
+    background: #fff1e6;
+    color: var(--brand);
+    padding: 6px 16px;
+    border-radius: 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease, opacity .15s ease;
+  }
+  .ticket-preview-btn:hover { background: var(--brand); color: #fff; }
+  .ticket-preview-btn.confirm { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .ticket-preview-btn.confirm:hover { background: #e65a2b; }
+  .ticket-preview-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .ticket-preview-status { font-size: 12px; color: var(--muted); min-height: 16px; }
+  .ticket-preview-status.ok { color: #2e9e5b; }
+  .ticket-preview-status.warn { color: #c98a00; }
+  .ticket-preview-status.invalid { color: #d93a3a; }
+
   .bubble .error { color: #d93a3a; margin-top: 6px; }
 
   /* 流式光标 */
@@ -773,6 +808,12 @@
       for (const message of data.messages || []) {
         if (message.role === 'user') addUserMessage(message.content || '');
         else addAssistantMessage(message.content || '');
+      }
+      if (data.pending_action && data.pending_action.type === 'ticket_preview') {
+        const { bubble } = addAssistantMessage('');
+        const emptyBody = bubble.querySelector('.body');
+        if (emptyBody) emptyBody.remove();
+        renderTicketPreview(bubble, data.pending_action);
       }
       closeSidebar();
       renderConversationList();
@@ -1216,6 +1257,172 @@
     }
   }
 
+  // ---- ch08 工单确认预览卡片：展示草稿，确认/取消走 /chat/ticket/resume ----
+  const TICKET_NO_RE = /T8[0-9a-f]{30}/;
+
+  function renderTicketPreview(bubbleEl, item) {
+    const draft = item.draft || {};
+    const confirmationId = String(item.confirmation_id || '');
+    const card = document.createElement('div');
+    card.className = 'ticket-preview';
+    card.dataset.confirmationId = confirmationId;
+
+    const head = document.createElement('div');
+    head.className = 'ticket-preview-head';
+    head.textContent = item.label || '确认建单';
+    card.appendChild(head);
+
+    const field = (label, value) => {
+      const row = document.createElement('div');
+      row.className = 'ticket-preview-field';
+      const lab = document.createElement('span');
+      lab.className = 'ticket-preview-label';
+      lab.textContent = label;
+      const val = document.createElement('span');
+      val.className = 'ticket-preview-value';
+      val.textContent = value || '';
+      row.append(lab, val);
+      card.appendChild(row);
+    };
+    field('工单类型', draft.ticket_type);
+    field('问题描述', draft.description);
+
+    const actions = document.createElement('div');
+    actions.className = 'ticket-preview-actions';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'ticket-preview-btn confirm';
+    confirmBtn.textContent = '确认提交';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'ticket-preview-btn';
+    cancelBtn.textContent = '取消';
+    actions.append(confirmBtn, cancelBtn);
+    card.appendChild(actions);
+
+    const status = document.createElement('div');
+    status.className = 'ticket-preview-status';
+    card.appendChild(status);
+
+    bubbleEl.appendChild(card);
+    scrollToBottom();
+
+    let decided = false;
+
+    const setStatus = (text, kind) => {
+      status.textContent = text;
+      status.className = 'ticket-preview-status' + (kind ? ' ' + kind : '');
+    };
+
+    const markInvalid = () => {
+      decided = true;
+      confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
+      setStatus('该确认已失效，请刷新会话', 'invalid');
+    };
+
+    // 断网/流中断：先读服务端状态再决定，不盲目重发 POST。
+    async function recoverFromError() {
+      try {
+        const resp = await fetch('/api/conversations/' + sessionId + '/messages');
+        if (!resp.ok) { markInvalid(); return; }
+        const data = await resp.json();
+        const pa = data.pending_action;
+        if (pa && pa.type === 'ticket_preview'
+            && String(pa.confirmation_id) === confirmationId) {
+          decided = false;
+          confirmBtn.disabled = false;
+          cancelBtn.disabled = false;
+          setStatus('网络异常，请重试', 'warn');
+        } else {
+          markInvalid();
+        }
+      } catch (e) {
+        markInvalid();
+      }
+    }
+
+    // ctx.raw 没拼出工单号时，回查历史里最新的助手消息。
+    async function findTicketInHistory() {
+      try {
+        const resp = await fetch('/api/conversations/' + sessionId + '/messages');
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        for (const m of (data.messages || []).slice().reverse()) {
+          if (m.role !== 'assistant') continue;
+          const match = (m.content || '').match(TICKET_NO_RE);
+          if (match) return match[0];
+        }
+        return null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    async function submitDecision(decision) {
+      if (decided) return; // 快速双击/重复点击防护：只发一次
+      decided = true;
+      confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
+      setStatus(decision === 'confirm' ? '提交中…' : '取消中…');
+      setSending(true);
+      try {
+        let resp;
+        try {
+          resp = await fetch('/chat/ticket/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              session_id: String(sessionId),
+              confirmation_id: confirmationId,
+              decision,
+            }),
+          });
+        } catch (e) {
+          await recoverFromError();
+          return;
+        }
+        if (!resp.ok) {
+          if (resp.status === 409 || resp.status === 404) markInvalid();
+          else await recoverFromError();
+          return;
+        }
+
+        const { bubble } = addAssistantMessage('');
+        const stream = document.createElement('span');
+        stream.className = 'stream';
+        const cursor = document.createElement('span');
+        cursor.className = 'cursor';
+        bubble.innerHTML = '';
+        bubble.appendChild(stream);
+        bubble.appendChild(cursor);
+        const ctx = { raw: '', stream, finished: false, citations: [], actions: [] };
+        try {
+          await consumeStream(resp, bubble, ctx);
+        } catch (e) {
+          finalizeAssistant(bubble, ctx);
+          appendError(bubble, e.message);
+          await recoverFromError();
+          return;
+        }
+
+        if (decision === 'confirm') {
+          const found = ctx.raw.match(TICKET_NO_RE);
+          const ticketNo = found ? found[0] : await findTicketInHistory();
+          setStatus(ticketNo ? '工单号 ' + ticketNo : '已提交确认，请查看上方回复', 'ok');
+        } else {
+          setStatus('已取消，本次未创建工单', 'ok');
+        }
+        scrollToBottom();
+      } finally {
+        setSending(false);
+      }
+    }
+
+    confirmBtn.addEventListener('click', () => submitDecision('confirm'));
+    cancelBtn.addEventListener('click', () => submitDecision('cancel'));
+  }
+
   function renderActions(bubbleEl, items) {
     if (!items || !items.length) return;
     const bar = document.createElement('div');
@@ -1223,6 +1430,10 @@
     for (const item of items) {
       if (item.type === 'select_order') {
         renderOrderCards(bubbleEl, item);
+        return;
+      }
+      if (item.type === 'ticket_preview') {
+        renderTicketPreview(bubbleEl, item);
         return;
       }
       const button = document.createElement('button');
