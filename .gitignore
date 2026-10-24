@@ -28,3 +28,4 @@ log/
 # 过程留痕只留本地，不上传（2026-10-15 起生效；含用户原话与评审/裁决记录）
 dev-notes/
 docs/superpowers/
+.superpowers/
