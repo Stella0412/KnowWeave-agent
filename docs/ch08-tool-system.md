@@ -19,7 +19,17 @@ MCP Server（物流 `logistics`、售后 `after_sales`），经官方 `langchain
 ```
 
 App 依赖 MySQL 与 LLM 密钥。联调验收使用临时 Docker 容器 `knowweave-ch08-mysql`（只动临时库，不改
-`.env`），用环境变量覆盖即可（`Settings` 按字段名大小写不敏感地解析环境变量）：
+`.env`）。容器可用以下命令重建（数据为临时数据，验收后可 `docker rm -f knowweave-ch08-mysql`）：
+
+```powershell
+docker run -d --name knowweave-ch08-mysql `
+  -e MYSQL_ROOT_PASSWORD=knowweave123 -e MYSQL_DATABASE=knowweave `
+  -p 127.0.0.1:3307:3306 mysql:8
+# 等待容器就绪后应用工具审计表 DDL
+Get-Content sql/ch08-tool-audit.sql -Raw | docker exec -i knowweave-ch08-mysql mysql -uroot -pknowweave123 knowweave
+```
+
+启动 App 时用环境变量覆盖即可（`Settings` 按字段名大小写不敏感地解析环境变量）：
 
 ```powershell
 $env:MYSQL_HOST="127.0.0.1"; $env:MYSQL_PORT="3307"; $env:MYSQL_USER="root"; `
