@@ -126,12 +126,27 @@ async def _submit_refund(arguments, context):
     )
 
 
-async def _create_ticket_stub(arguments, context):
-    # create_ticket 在 agent 节点被拦截成前端按钮提议（Task 9 前不写库）。
-    # 此处仅作为内置注册占位，正常路径不会经引擎调用。
+def _ticket_request_guard(arguments, context):
+    evidence = getattr(context, "ticket_request", None) or {}
+    if getattr(evidence, "to_dict", None):
+        evidence = evidence.to_dict()
+    if not isinstance(evidence, dict) or evidence.get("status") != "active":
+        return ToolOutcome(
+            "permission_denied",
+            message="没有有效的用户建单请求证据，请先让用户明确要求创建工单。",
+        )
+    return None
+
+
+async def _create_ticket(arguments, context):
+    from app.tools.ticket_confirmation import create_ticket_once, draft_from_call
+
+    draft = draft_from_call(arguments, context)
+    ticket_no = await create_ticket_once(context.session_factory, draft)
     return ToolOutcome(
-        "success", data=None,
-        message="工单选项已呈现给用户，请简要说明并停止，不要再次调用 create_ticket。",
+        "success",
+        data={"ticket_no": ticket_no},
+        message=f"已为您创建工单，工单号 {ticket_no}，人工客服会尽快处理。",
     )
 
 
@@ -175,8 +190,10 @@ def register_builtins(registry) -> None:
             "description": {"type": "string"},
             "ticket_type": {"type": "string", "enum": ["售后", "投诉", "咨询"]},
         }, "required": ["description", "ticket_type"]},
-        source="builtin", server=None, original_name=None, invoke=_create_ticket_stub,
-        effect="read", guard=_route_guard("create_ticket"),
+        source="builtin", server=None, original_name=None, invoke=_create_ticket,
+        effect="write", guard=_compose_guards(
+            _route_guard("create_ticket"), _ticket_request_guard
+        ),
     ))
 
 
