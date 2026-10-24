@@ -14,7 +14,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
+import socket
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -201,12 +204,222 @@ async def run_intent() -> int:
     return 0
 
 
+# —— trajectory 模式：真实模型 MCP 工具轨迹（双 Server + 热新增工具） ——
+#
+# 用真实模型 + 官方 langchain-mcp-adapters 跑出工具轨迹，逐例报告；模型不调用预期工具
+# 即 FAIL，绝不替换假模型、绝不编造/改标轨迹。热新增工具只在「重启该 Server + 更新
+# 临时权限文件」之后才对模型可见。
+
+_TEMP_LOGISTICS_SERVER = '''\
+"""Temporary logistics MCP server for ch08 trajectory eval (NOT committed)."""
+
+import argparse
+
+from mcp.server.fastmcp import FastMCP
+
+
+def query_logistics(tracking_no: str) -> dict:
+    return {
+        "tracking_no": tracking_no,
+        "carrier": "顺丰速运",
+        "status_code": "in_transit",
+        "events": [{"time": "2026-10-21T08:00:00+00:00", "status_code": "in_transit"}],
+        "mock": True,
+    }
+
+
+def query_estimate(tracking_no: str) -> dict:
+    """查询运单预计送达时间。用户询问什么时候送到、还要多久、预计送达时间时调用本工具。"""
+    return {"tracking_no": tracking_no, "eta": "预计 2026-10-26 送达", "days_left": 2, "mock": True}
+
+
+def create_server(host, port, *, with_estimate=False):
+    mcp = FastMCP("logistics", host=host, port=port, stateless_http=True, json_response=True)
+    mcp.tool()(query_logistics)
+    if with_estimate:
+        mcp.tool()(query_estimate)
+    return mcp
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8101)
+    parser.add_argument("--with-estimate", action="store_true")
+    args = parser.parse_args(argv)
+    create_server(host=args.host, port=args.port, with_estimate=args.with_estimate).run(
+        transport="streamable-http"
+    )
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+async def _wait_trajectory_ready(client, expect_log: int, expect_after: int,
+                                 deadline: float = 25.0) -> None:
+    loop = asyncio.get_running_loop()
+    end = loop.time() + deadline
+    while loop.time() < end:
+        try:
+            log = await asyncio.wait_for(client.get_tools(server_name="logistics"), timeout=2)
+            after = await asyncio.wait_for(client.get_tools(server_name="after_sales"), timeout=2)
+            if len(log) == expect_log and len(after) == expect_after:
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+    raise RuntimeError(f"MCP servers 未在 {deadline}s 内就绪")
+
+
+def _tool_dicts(definitions: dict) -> list[dict]:
+    return [
+        {"name": d.name, "description": d.description, "parameters": d.parameters}
+        for d in definitions.values()
+    ]
+
+
+async def _trajectory_of(bound, message: str) -> list[str]:
+    ai = await bound.ainvoke([
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=message),
+    ])
+    return [c.get("name", "") for c in getattr(ai, "tool_calls", None) or []]
+
+
+async def run_trajectory() -> int:
+    reason = _blocked_reason()
+    if reason is not None:
+        print(f"BLOCKED: {reason}")
+        return 2
+    try:
+        model = build_chat_model(settings, temperature=0.0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"BLOCKED: 模型初始化失败: {exc}")
+        return 2
+
+    from app.tools.mcp_client import MCPToolProvider, create_mcp_client
+    from app.tools.policy import PolicyStore
+
+    repo_root = Path(__file__).resolve().parent.parent
+    tmp = Path(tempfile.mkdtemp(prefix="ch08-trajectory-"))
+    logistics_src = tmp / "tmp_logistics.py"
+    logistics_src.write_text(_TEMP_LOGISTICS_SERVER, encoding="utf-8")
+    log_port, after_port = _free_port(), _free_port()
+    procs = []
+
+    def _write_policy(mcp: dict) -> None:
+        (tmp / "permissions.json").write_text(
+            json.dumps({"mcp": mcp}, ensure_ascii=False), encoding="utf-8")
+
+    try:
+        procs.append(await asyncio.create_subprocess_exec(
+            sys.executable, str(logistics_src), "--host", "127.0.0.1",
+            "--port", str(log_port), cwd=str(repo_root),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
+        procs.append(await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "mcp_servers.after_sales",
+            "--host", "127.0.0.1", "--port", str(after_port), cwd=str(repo_root),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
+
+        class _S:
+            mcp_logistics_url = f"http://127.0.0.1:{log_port}/mcp"
+            mcp_after_sales_url = f"http://127.0.0.1:{after_port}/mcp"
+
+        client = create_mcp_client(_S)
+        _write_policy({
+            "logistics": {"query_logistics": "read"},
+            "after_sales": {"query_warranty": "read", "query_return_progress": "read"},
+        })
+        provider = MCPToolProvider(
+            client, PolicyStore(tmp / "permissions.json"), discovery_timeout=3.0)
+        await _wait_trajectory_ready(client, 1, 2)
+        definitions = await provider.refresh()
+        bound = model.bind_tools(_tool_dicts(definitions))
+
+        cases = [
+            ("logistics_tracking", "帮我查一下运单 SF-TRJ-1 的物流轨迹",
+             "logistics_query_logistics"),
+            ("after_sales_warranty", "帮我查一下耳机这个商品的保修状态，看看还在不在保修期内",
+             "after_sales_query_warranty"),
+            ("after_sales_return", "我的退货单 R-TRJ-1 现在到哪一步了？",
+             "after_sales_query_return_progress"),
+            ("pre_hot_estimate", "帮我查一下运单 SF-TRJ-2 大概什么时候能送到？",
+             "logistics_query_estimate"),
+        ]
+
+        results: list[bool] = []
+        for case_id, message, expected in cases:
+            try:
+                trajectory = await _trajectory_of(bound, message)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[{case_id}] FAIL: 模型调用异常: {exc}")
+                results.append(False)
+                continue
+            passed = (expected not in trajectory) if case_id == "pre_hot_estimate" \
+                else (expected in trajectory)
+            results.append(passed)
+            print(f"[{case_id}] 轨迹={trajectory} 关键公开名={expected} "
+                  f"{'PASS' if passed else 'FAIL'}")
+
+        # 只重启 logistics Server（换成带新工具的源码）+ 更新临时权限文件，不重建 provider
+        procs[0].terminate()
+        await asyncio.wait_for(procs[0].wait(), timeout=5)
+        procs[0] = await asyncio.create_subprocess_exec(
+            sys.executable, str(logistics_src), "--host", "127.0.0.1",
+            "--port", str(log_port), "--with-estimate", cwd=str(repo_root),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        _write_policy({
+            "logistics": {"query_logistics": "read", "query_estimate": "read"},
+            "after_sales": {"query_warranty": "read", "query_return_progress": "read"},
+        })
+        await _wait_trajectory_ready(client, 2, 2)
+        definitions = await provider.refresh()
+        bound = model.bind_tools(_tool_dicts(definitions))
+        try:
+            trajectory = await _trajectory_of(
+                bound, "帮我查一下运单 SF-TRJ-3 大概什么时候能送到？")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[hot_estimate] FAIL: 模型调用异常: {exc}")
+            trajectory = []
+        passed = "logistics_query_estimate" in trajectory
+        results.append(passed)
+        print(f"[hot_estimate] 轨迹={trajectory} 关键公开名=logistics_query_estimate "
+              f"{'PASS' if passed else 'FAIL'}")
+        print(f"热新增后可见公开名集合: {sorted(definitions)}")
+
+        hit = sum(1 for p in results if p)
+        total = len(results)
+        print(f"\n轨迹命中: {hit}/{total}")
+        return 0 if hit == total else 1
+    finally:
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            try:
+                await asyncio.wait_for(p.wait(), timeout=5)
+            except Exception:
+                p.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["intent"], default="intent")
+    parser.add_argument("--mode", choices=["intent", "trajectory"], default="intent")
     args = parser.parse_args()
     if args.mode == "intent":
         return asyncio.run(run_intent())
+    if args.mode == "trajectory":
+        return asyncio.run(run_trajectory())
     return 2
 
 
