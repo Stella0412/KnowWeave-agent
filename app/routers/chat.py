@@ -9,10 +9,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db.engine import SessionFactory
 from app.db.repository import ChatRepository, OrderRepository, RefundRepository
-from app.schemas.chat import ChatRequest, RefundRequest, ResumeRequest
-from app.services.chat_service import ChatService
+from app.schemas.chat import ChatRequest, RefundRequest, ResumeRequest, TicketResumeRequest
+from app.services.chat_service import ChatService, TicketResumeRejected
 from app.services.refund_policy import check_refund_eligibility
-from app.tools.business import REFUND_REASON_CATEGORIES, create_ticket_record
+from app.tools.business import REFUND_REASON_CATEGORIES
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -110,22 +110,28 @@ async def refund(req: RefundRequest) -> dict:
 
 
 @router.post("/ticket")
-async def create_ticket_endpoint(req: TicketRequest) -> dict:
+async def create_ticket_endpoint(req: TicketRequest, request: Request) -> dict:
+    service = _get_chat_service(request)
     try:
-        conversation_id = int(req.session_id)
+        ticket_no = await service.create_ticket_button(
+            req.session_id, req.ticket_type, req.description
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="session_id 必须是数字") from exc
-
-    async with SessionFactory() as session:
-        conv = await ChatRepository(session).get_conversation(conversation_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
-
-    ticket_no = await create_ticket_record(
-        SessionFactory,
-        conversation_id,
-        req.description,
-        req.ticket_type,
-        escalate=False,
-    )
+        message = str(exc)
+        status = 404 if message == "会话不存在" else 400
+        raise HTTPException(status_code=status, detail=message) from exc
     return {"ticket_no": ticket_no}
+
+
+@router.post("/ticket/resume")
+async def chat_ticket_resume(req: TicketResumeRequest, request: Request) -> EventSourceResponse:
+    service = _get_chat_service(request)
+    try:
+        await service.validate_ticket_resume(req.session_id, req.confirmation_id, req.decision)
+    except TicketResumeRejected as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return EventSourceResponse(
+        _sse_data(service.ticket_resume_stream(
+            req.session_id, req.confirmation_id, req.decision,
+        ))
+    )

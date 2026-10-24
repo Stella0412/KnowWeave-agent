@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.db.engine import SessionFactory
 from app.db.repository import ChatRepository
@@ -27,15 +27,20 @@ async def list_conversations(user_id: str = "anonymous") -> dict:
 
 
 @router.get("/{conversation_id}/messages")
-async def list_messages(conversation_id: int, user_id: str = "anonymous") -> dict:
+async def list_messages(conversation_id: int, request: Request, user_id: str = "anonymous") -> dict:
     async with SessionFactory() as session:
         repo = ChatRepository(session)
         conv = await repo.get_conversation(conversation_id)
         if conv is None or conv.user_id != user_id:
             raise HTTPException(status_code=404, detail="会话不存在")
         rows = await repo.list_ui_messages(conversation_id)
+    service = getattr(request.app.state, "chat_service", None)
+    pending_action = None
+    if service is not None:
+        pending_action = await service.pending_action_for(conversation_id)
     return {
         "conversation_id": conversation_id,
+        "pending_action": pending_action,
         "messages": [
             {
                 "id": row.id,

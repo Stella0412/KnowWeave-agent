@@ -177,7 +177,8 @@ class ToolEngine:
                     status="失败", error_message=str(e), retry_count=0, duration_ms=0,
                 )
             if not confirmed:
-                message = f"写操作未获用户确认: {name}"
+                reason = getattr(context, "confirmation_reason", None)
+                message = reason if reason else f"写操作未获用户确认: {name}"
                 return await self._emit(
                     context, name, call_id, args, definition,
                     ToolOutcome("permission_denied", data=None, message=message),

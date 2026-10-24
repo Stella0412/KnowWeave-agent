@@ -82,10 +82,15 @@ def confirm_ticket(draft: TicketDraft, context) -> bool:
     )
     if not isinstance(response, dict):
         return False
-    return (
-        response.get("decision") == "confirm"
-        and response.get("confirmation_id") == draft.confirmation_id
-    )
+    decision = response.get("decision")
+    if decision == "cancel":
+        context.ticket_decision = "cancel"
+        context.confirmation_reason = "用户取消确认"
+        return False
+    if decision == "confirm" and response.get("confirmation_id") == draft.confirmation_id:
+        context.ticket_decision = "confirm"
+        return True
+    return False
 
 
 def draft_from_call(arguments: dict, context) -> TicketDraft:

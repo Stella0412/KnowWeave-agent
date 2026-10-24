@@ -3,7 +3,8 @@
 ch08：工具调用改走动态工具引擎。agent_llm 每次调用取一轮工具快照并绑定 JSON Schema；
 agent_tools 每次节点执行只处理 pending_tool_calls 里游标指向的那一个调用，执行完推进
 游标，由 make_tool_loop_router 决定回到 agent_tools（还有未执行调用）还是 agent_llm。
-create_ticket 仍按旧策略在 agent 节点拦截成「前端按钮提议」，Task 9 前不写库。
+create_ticket 与其它工具一样走引擎：带服务端建单证据与可信确认入口，确认通过才写库，
+并在恢复回合消费/取消授权。
 """
 
 import json
@@ -26,7 +27,7 @@ from app.tools.contracts import ExecutionContext
 from app.tools.executor import ToolEngine
 from app.tools.policy import PolicyStore
 from app.tools.registry import ToolRegistry, tool_timeout
-from app.tools.validation import argument_errors
+from app.tools.ticket_confirmation import confirm_ticket_call
 
 logger = logging.getLogger("knowweave.turn")
 context_logger = logging.getLogger("knowweave.context")
@@ -201,55 +202,6 @@ async def agent_llm(state, runtime):
     return update
 
 
-def _format_argument_errors(errors: list[dict]) -> str:
-    parts = []
-    for e in errors:
-        path = "/".join(str(p) for p in e["path"]) or "(root)"
-        message = e["message"]
-        if "allowed_values" in e:
-            message += f"（允许值: {', '.join(map(str, e['allowed_values']))}）"
-        parts.append(f"{path}: {message}")
-    return "参数校验失败: " + "; ".join(parts)
-
-
-def _intercept_create_ticket(call, definitions, *, intent=None) -> ToolMessage:
-    """create_ticket 保持旧拦截策略：不写库，只产出前端按钮提议（Task 9 前）。
-
-    参数改用 definition.parameters 做严格 JSON Schema 校验（不再是旧 Pydantic args_schema）。
-    """
-    call_id = call.get("id", "")
-    name = "create_ticket"
-    definition = definitions.get("create_ticket")
-    if definition is None:
-        return ToolMessage(content="未知工具: create_ticket", tool_call_id=call_id, name=name)
-
-    args = call.get("args") or {}
-    errors = argument_errors(definition.parameters, args)
-    if errors:
-        return ToolMessage(
-            content=_format_argument_errors(errors),
-            tool_call_id=call_id,
-            name=name,
-        )
-
-    description = args.get("description", "")
-    ticket_type = args.get("ticket_type", "咨询")
-    produced = []
-    if intent == "after_sale" and ticket_type == "售后":
-        produced.append({"type": "transfer_human", "label": "转人工"})
-    produced.append({
-        "type": "create_ticket",
-        "label": "建工单",
-        "draft": {"description": description, "ticket_type": ticket_type},
-    })
-    return ToolMessage(
-        content="工单选项已呈现给用户，请简要说明并停止，不要再次调用 create_ticket。",
-        tool_call_id=call_id,
-        name=name,
-        artifact={"category": "success", "actions": produced},
-    )
-
-
 async def agent_tools(state, runtime):
     context = runtime.context
     registry = _resolve_registry(context)
@@ -281,7 +233,15 @@ async def agent_tools(state, runtime):
     share = max(0, budget - tool_tokens_used) // remaining_calls if remaining_calls else 0
 
     if name == "create_ticket":
-        message = _intercept_create_ticket(call, definitions, intent=state.get("intent"))
+        exec_context = ExecutionContext(
+            conversation_id=state.get("conversation_id"),
+            tool_call_id=call.get("id", ""),
+            session_factory=context.session_factory,
+            turn=context.turn,
+            ticket_request=state.get("ticket_request"),
+            confirmation=confirm_ticket_call,
+            state=state,
+        )
     else:
         exec_context = ExecutionContext(
             conversation_id=state.get("conversation_id"),
@@ -290,7 +250,7 @@ async def agent_tools(state, runtime):
             turn=context.turn,
             state=state,
         )
-        message = await engine.execute(call, exec_context, definitions)
+    message = await engine.execute(call, exec_context, definitions)
 
     # 单条结果截断（与旧批量实现共用同一预算口径）。
     if counter.count_message(message) > share:
@@ -327,7 +287,7 @@ async def agent_tools(state, runtime):
     if any(isinstance(a, dict) and a.get("type") == "refund_form" for a in new_actions):
         refund_offered = True
 
-    return {
+    update = {
         "messages": [message],
         "tool_cursor": cursor + 1,
         "tool_tokens_used": tool_tokens_used,
@@ -335,3 +295,28 @@ async def agent_tools(state, runtime):
         "citations": citations,
         "refund_offered": refund_offered,
     }
+    if name == "create_ticket":
+        consumed = _consume_ticket_request(
+            state.get("ticket_request"), exec_context, artifact.get("category")
+        )
+        if consumed is not None:
+            update["ticket_request"] = consumed
+    return update
+
+
+def _consume_ticket_request(evidence, exec_context, artifact_category) -> dict | None:
+    """把 create_ticket 的授权在恢复回合消费掉，保证同一恢复回合不能复用授权。
+
+    取消 → cancelled；确认且写库成功 → consumed；确认但故障/其他 → 保持 active，
+    下一次恢复必须重新确认。
+    """
+    if getattr(evidence, "to_dict", None):
+        evidence = evidence.to_dict()
+    if not isinstance(evidence, dict):
+        return None
+    decision = getattr(exec_context, "ticket_decision", None)
+    if decision == "cancel":
+        return {**evidence, "status": "cancelled"}
+    if decision == "confirm" and artifact_category == "success":
+        return {**evidence, "status": "consumed"}
+    return None

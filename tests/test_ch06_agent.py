@@ -236,7 +236,7 @@ async def test_after_sale_agent_binds_full_fixed_tool_set(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_after_sale_create_ticket_adds_transfer_action(session_factory):
+async def test_after_sale_create_ticket_without_evidence_is_denied(session_factory):
     state = _state(
         intent="after_sale",
         messages=[AIMessage(content="", tool_calls=[{
@@ -252,10 +252,12 @@ async def test_after_sale_create_ticket_adds_transfer_action(session_factory):
         tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
+    # 新语义：after_sale 不再注入 transfer_human/create_ticket 动作；create_ticket 只走引擎，
+    # 且没有服务端建单证据时被守卫拦截。
     types = [item["type"] for item in update["suggested_actions"]]
-    assert "transfer_human" in types
-    assert "create_ticket" in types
-    assert "refund_form" not in types
+    assert types == []
+    assert "transfer_human" not in types
+    assert "没有有效的用户建单请求证据" in update["messages"][0].content
 
 
 @pytest.mark.asyncio

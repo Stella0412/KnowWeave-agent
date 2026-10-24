@@ -40,6 +40,8 @@ class ExecutionContext:
     ticket_request: Any = None
     confirmation: Any = None
     state: Any = None
+    ticket_decision: str | None = None
+    confirmation_reason: str | None = None
 
 
 @dataclass

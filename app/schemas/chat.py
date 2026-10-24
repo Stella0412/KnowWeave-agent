@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
@@ -9,6 +11,14 @@ class ChatRequest(BaseModel):
 class ResumeRequest(BaseModel):
     session_id: str
     order_no: str = Field(..., min_length=1)
+
+
+class TicketResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    confirmation_id: str
+    decision: Literal["confirm", "cancel"]
 
 
 class RefundRequest(BaseModel):

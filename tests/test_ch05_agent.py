@@ -153,7 +153,7 @@ async def test_agent_tools_executes_business_tool(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_agent_tools_intercepts_create_ticket(session_factory):
+async def test_agent_tools_rejects_create_ticket_without_evidence(session_factory):
     async with session_factory() as session:
         cid = await ChatRepository(session).create_conversation()
         await session.commit()
@@ -176,9 +176,9 @@ async def test_agent_tools_intercepts_create_ticket(session_factory):
         tool_cursor=0,
     )
     update = await agent_tools(state, _runtime(session_factory))
-    assert update["suggested_actions"][0]["type"] == "create_ticket"
-    assert update["suggested_actions"][0]["draft"]["description"] == "商品破损"
-    assert "已呈现给用户" in update["messages"][0].content
+    # 新语义：create_ticket 走统一引擎；没有服务端建单证据 → 守卫拦截，不产出任何前端动作。
+    assert update["suggested_actions"] == []
+    assert "没有有效的用户建单请求证据" in update["messages"][0].content
     from sqlalchemy import select
     from app.db.models import Ticket
     async with session_factory() as session:
@@ -206,28 +206,45 @@ async def test_agent_tools_rejects_bad_ticket_args(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_agent_tools_dedupes_ticket_actions(session_factory):
-    # 一条 AIMessage 的重复 create_ticket 调用逐节点执行，跨节点合并动作仍去重。
+async def test_agent_tools_replay_same_call_writes_single_ticket(session_factory, monkeypatch):
+    # LangGraph 恢复会重跑 agent_tools 节点开头：同一 tool_call_id 重放必须复用稳定工单号，
+    # 不能产生第二张工单。这里用可信确认恒通过来直连验证写一次语义。
+    async def _confirm(definition, arguments, context):
+        context.ticket_decision = "confirm"
+        return True
+
+    monkeypatch.setattr("app.graph.agent.confirm_ticket_call", _confirm)
+    async with session_factory() as session:
+        cid = await ChatRepository(session).create_conversation()
+        await session.commit()
     call = {
         "name": "create_ticket",
         "args": {"description": "商品破损", "ticket_type": "售后"},
         "id": "c1", "type": "tool_call",
     }
-    state = _state(
-        route="business",
-        messages=[HumanMessage(content="建工单"), AIMessage(content="", tool_calls=[call, {**call, "id": "c2"}])],
-        pending_tool_calls=[call, {**call, "id": "c2"}],
-        tool_cursor=0,
-    )
-    first = await agent_tools(state, _runtime(session_factory))
-    assert len(first["suggested_actions"]) == 1
+    evidence = {"message_id": 1, "quote": "帮我建个工单", "status": "active"}
 
-    state["messages"] = state["messages"] + first["messages"]
-    state["tool_cursor"] = first["tool_cursor"]
-    state["tool_tokens_used"] = first["tool_tokens_used"]
-    state["suggested_actions"] = first["suggested_actions"]
-    second = await agent_tools(state, _runtime(session_factory))
-    assert len(second["suggested_actions"]) == 1
+    def make_state():
+        return _state(
+            conversation_id=cid,
+            route="business",
+            ticket_request=dict(evidence),
+            messages=[HumanMessage(content="帮我建个工单"), AIMessage(content="", tool_calls=[call])],
+            pending_tool_calls=[call],
+            tool_cursor=0,
+        )
+
+    first = await agent_tools(make_state(), _runtime(session_factory))
+    assert "工单号" in first["messages"][0].content
+    assert first["ticket_request"]["status"] == "consumed"
+
+    second = await agent_tools(make_state(), _runtime(session_factory))
+    assert second["ticket_request"]["status"] == "consumed"
+    from sqlalchemy import select
+    from app.db.models import Ticket
+    async with session_factory() as session:
+        tickets = (await session.execute(select(Ticket))).scalars().all()
+    assert len(tickets) == 1
 
 
 @pytest.mark.asyncio

@@ -317,7 +317,7 @@ async def test_max_steps_forces_fallback_without_executing_tool(session_factory)
 
 
 @pytest.mark.asyncio
-async def test_create_ticket_intercept_end_to_end(session_factory):
+async def test_create_ticket_interrupt_end_to_end(session_factory):
     async with session_factory() as session:
         cid = await ChatRepository(session).create_conversation()
         await session.commit()
@@ -328,15 +328,26 @@ async def test_create_ticket_intercept_end_to_end(session_factory):
             "args": {"description": "商品破损", "ticket_type": "售后"},
             "id": "c1", "type": "tool_call",
         }]),
-        AIMessage(content="已为您展示建单选项"),
+        AIMessage(content="已为您创建工单"),
     ])
     graph = build_graph(checkpointer=InMemorySaver())
     state = await _invoke(
-        graph, _input("商品破损", conversation_id=cid),
+        graph,
+        _input(
+            "帮我建个工单",
+            conversation_id=cid,
+            ticket_request={"message_id": 1, "quote": "帮我建个工单", "status": "active"},
+        ),
         _context("clarify", agent, session_factory),
     )
-    assert state["suggested_actions"][0]["type"] == "create_ticket"
-    assert state["answer"] == "已为您展示建单选项"
+    # 新语义：create_ticket 走到可信确认入口，在写库前中断等待确认（不再产出 create_ticket 动作）。
+    pending = state.get("__interrupt__")
+    assert pending, "create_ticket 应在写库前中断等待确认"
+    payload = getattr(pending[0], "value", pending[0])
+    assert payload["type"] == "ticket_confirmation"
+    assert payload["confirmation_id"].startswith("TC")
+    assert payload["draft"]["description"] == "商品破损"
+    assert state.get("suggested_actions") == []
     from sqlalchemy import select
     from app.db.models import Ticket
     async with session_factory() as session:

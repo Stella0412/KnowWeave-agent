@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
+from weakref import WeakValueDictionary
 
 from langchain_core.messages import (
     AIMessage,
@@ -23,11 +26,43 @@ from app.rag.pipeline import TurnContext, default_source_files
 from app.services.context_manager import ContextManager
 from app.services.summary_service import SummaryService
 from app.services.token_counter import TokenCounter, compute_budget
+from app.tools.contracts import ExecutionContext
 from app.tools.ticket_authorization import update_ticket_request
+from app.tools.ticket_confirmation import confirm_ticket_call, draft_from_call, ticket_no_for
 
 logger = logging.getLogger("knowweave.turn")
 
 _FIXED_REPLY_NODES = {"chitchat_reply", "complaint_reply", "fallback_reply"}
+
+# 每个会话一把异步锁：同一会话的发送与恢复串行化，不同会话互不阻塞。
+# WeakValueDictionary 保证锁随会话不再被引用而释放。
+_conversation_locks: WeakValueDictionary = WeakValueDictionary()
+_conversation_locks_guard = asyncio.Lock()
+
+
+class TicketResumeRejected(Exception):
+    """工单恢复请求在校验阶段被拒绝；携带映射到 HTTP 的状态码。"""
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+async def _lock_for_conversation(conversation_id: int) -> asyncio.Lock:
+    async with _conversation_locks_guard:
+        lock = _conversation_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _conversation_locks[conversation_id] = lock
+        return lock
+
+
+async def _auto_approve_confirmation(definition, arguments, context) -> bool:
+    """旧 /chat/ticket 按钮的服务端内部确认：跳过 interrupt，直接视为用户确认。"""
+    context.ticket_decision = "confirm"
+    context.confirmation_reason = None
+    return True
 
 
 def _interrupt_value(snapshot):
@@ -46,14 +81,27 @@ def _interrupt_from_result(result):
 
 
 def _interrupt_actions(payload) -> list[dict]:
-    if not isinstance(payload, dict) or payload.get("kind") != "select_order":
+    if not isinstance(payload, dict):
         return []
-    return [{
-        "type": "select_order",
-        "label": "选择订单",
-        "prompt": payload.get("prompt") or "请选择要退款的订单",
-        "orders": list(payload.get("orders") or []),
-    }]
+    if payload.get("kind") == "select_order":
+        return [{
+            "type": "select_order",
+            "label": "选择订单",
+            "prompt": payload.get("prompt") or "请选择要退款的订单",
+            "orders": list(payload.get("orders") or []),
+        }]
+    if payload.get("type") == "ticket_confirmation":
+        draft = payload.get("draft") or {}
+        return [{
+            "type": "ticket_preview",
+            "label": "确认建单",
+            "confirmation_id": payload.get("confirmation_id"),
+            "draft": {
+                "ticket_type": draft.get("ticket_type"),
+                "description": draft.get("description"),
+            },
+        }]
+    return []
 
 
 def _last_human_text(messages) -> str:
@@ -142,6 +190,9 @@ class ChatService:
         self._registry, self._provider, self._engine = self._resolve_tool_runtime(
             registry, provider, engine,
         )
+        # SSE 恢复路由里，validate 阶段先取锁并暂存，stream 生成器接管后在 finally 释放，
+        # 让锁覆盖「校验 + 流式完成/断开」全过程。键为 conversation_id。
+        self._held_locks: dict[int, asyncio.Lock] = {}
 
     def _resolve_tool_runtime(self, registry, provider, engine):
         from app.tools.audit import write_audit
@@ -188,6 +239,49 @@ class ChatService:
     async def shutdown(self) -> None:
         if self._summary_service is not None:
             await self._summary_service.shutdown()
+
+    @staticmethod
+    def _coerce_session_id(session_id: str | None) -> int | None:
+        if session_id is None:
+            return None
+        try:
+            return int(session_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("session_id 必须是数字") from exc
+
+    async def _require_conversation(self, conversation_id: int) -> None:
+        async with self._session_factory() as session:
+            conv = await ChatRepository(session).get_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+
+    async def _reserve(self, conversation_id: int) -> asyncio.Lock:
+        """为校验阶段取会话锁并暂存，供后续流式生成器接管释放。"""
+        lock = await _lock_for_conversation(conversation_id)
+        await lock.acquire()
+        self._held_locks[conversation_id] = lock
+        return lock
+
+    def _release(self, conversation_id: int) -> None:
+        lock = self._held_locks.pop(conversation_id, None)
+        if lock is not None:
+            lock.release()
+
+    async def _reject_if_ticket_pending(self, conversation_id: int) -> None:
+        """建单确认待处理时拒绝新聊天轮次，避免在 _prepare 落库用户消息前进入本轮。"""
+        snapshot = await self._graph.aget_state(thread_config(conversation_id))
+        payload = _interrupt_value(snapshot)
+        if isinstance(payload, dict) and payload.get("type") == "ticket_confirmation":
+            raise ValueError("当前会话有待确认的工单，请先确认或取消后再继续对话")
+
+    async def pending_action_for(self, conversation_id: int) -> dict | None:
+        """历史消息接口的可选 pending_action：仅工单确认卡片，无则 None。"""
+        snapshot = await self._graph.aget_state(thread_config(conversation_id))
+        payload = _interrupt_value(snapshot)
+        for action in _interrupt_actions(payload):
+            if action.get("type") == "ticket_preview":
+                return action
+        return None
 
     async def _prepare(self, session_id: str | None, message: str) -> _Prepared:
         if self._counter.count_text(message) > self._settings.max_user_input_tokens:
@@ -339,6 +433,17 @@ class ChatService:
 
     async def stream(self, session_id: str | None, message: str):
         try:
+            conversation_id = self._coerce_session_id(session_id)
+        except ValueError as exc:
+            yield {"type": "error", "message": str(exc)}
+            return
+        lock = None
+        if conversation_id is not None:
+            lock = await _lock_for_conversation(conversation_id)
+            await lock.acquire()
+        try:
+            if conversation_id is not None:
+                await self._reject_if_ticket_pending(conversation_id)
             prepared = await self._prepare(session_id, message)
             if prepared.created:
                 yield {"type": "session", "session_id": str(prepared.conversation_id)}
@@ -351,9 +456,10 @@ class ChatService:
             payload = _interrupt_value(snapshot)
             if payload is not None:
                 actions = _interrupt_actions(payload)
+                kinds = [a.get("type") for a in actions]
                 logger.info(json.dumps({
                     "conversation_id": prepared.conversation_id,
-                    "stop_reason": "awaiting_order",
+                    "stop_reason": "awaiting_ticket" if "ticket_preview" in kinds else "awaiting_order",
                     "orders_count": len((payload or {}).get("orders") or []),
                 }, ensure_ascii=False))
                 if actions:
@@ -372,31 +478,45 @@ class ChatService:
             yield {"type": "done"}
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
+        finally:
+            if lock is not None:
+                lock.release()
 
     async def run(self, session_id: str | None, message: str) -> dict:
-        prepared = await self._prepare(session_id, message)
-        config = thread_config(prepared.conversation_id)
-        state = await self._graph.ainvoke(
-            prepared.graph_input,
-            config=config,
-            context=self._context(prepared.turn),
-        )
-        state = dict(state or {})
-        payload = _interrupt_from_result(state)
-        if payload is None:
-            snapshot = await self._graph.aget_state(config)
-            payload = _interrupt_value(snapshot)
-        if payload is not None:
-            return {
-                "session_id": prepared.conversation_id,
-                "interrupted": True,
-                "actions": _interrupt_actions(payload),
-                "trace": state.get("trace") or {},
-            }
-        await self._persist_new(prepared.conversation_id, state, prepared.history_count)
-        result = self._run_result(prepared.conversation_id, state, prepared.history_count)
-        result["interrupted"] = False
-        return result
+        conversation_id = self._coerce_session_id(session_id)
+        lock = None
+        if conversation_id is not None:
+            lock = await _lock_for_conversation(conversation_id)
+            await lock.acquire()
+        try:
+            if conversation_id is not None:
+                await self._reject_if_ticket_pending(conversation_id)
+            prepared = await self._prepare(session_id, message)
+            config = thread_config(prepared.conversation_id)
+            state = await self._graph.ainvoke(
+                prepared.graph_input,
+                config=config,
+                context=self._context(prepared.turn),
+            )
+            state = dict(state or {})
+            payload = _interrupt_from_result(state)
+            if payload is None:
+                snapshot = await self._graph.aget_state(config)
+                payload = _interrupt_value(snapshot)
+            if payload is not None:
+                return {
+                    "session_id": prepared.conversation_id,
+                    "interrupted": True,
+                    "actions": _interrupt_actions(payload),
+                    "trace": state.get("trace") or {},
+                }
+            await self._persist_new(prepared.conversation_id, state, prepared.history_count)
+            result = self._run_result(prepared.conversation_id, state, prepared.history_count)
+            result["interrupted"] = False
+            return result
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _run_result(self, conversation_id, state, history_count):
         messages = list(state.get("messages") or [])
@@ -424,10 +544,7 @@ class ChatService:
         }
 
     async def _resume_setup(self, session_id: str, order_no: str):
-        try:
-            conversation_id = int(session_id)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("session_id 必须是数字") from exc
+        conversation_id = self._coerce_session_id(session_id)
         async with self._session_factory() as session:
             repo = ChatRepository(session)
             conv = await repo.get_conversation(conversation_id)
@@ -438,7 +555,8 @@ class ChatService:
                 raise ValueError("订单不存在")
         config = thread_config(conversation_id)
         snapshot = await self._graph.aget_state(config)
-        if _interrupt_value(snapshot) is None:
+        payload = _interrupt_value(snapshot)
+        if not isinstance(payload, dict) or payload.get("kind") != "select_order":
             raise ValueError("会话没有待选择的订单")
         messages = list((snapshot.values or {}).get("messages") or [])
         turn = TurnContext(
@@ -449,60 +567,202 @@ class ChatService:
         return conversation_id, config, snapshot, len(messages), turn
 
     async def resume_stream(self, session_id: str, order_no: str):
-        conversation_id, config, snapshot, history_count, turn = await self._resume_setup(
-            session_id, order_no
-        )
-        context = self._context(turn)
-        async for event in self._events(
-            Command(resume={"order_no": order_no}), config, context
-        ):
-            yield event
-        snapshot = await self._graph.aget_state(config)
-        payload = _interrupt_value(snapshot)
-        if payload is not None:
-            for action in _interrupt_actions(payload):
-                yield {"type": "actions", "items": [action]}
+        conversation_id = self._coerce_session_id(session_id)
+        lock = self._held_locks.pop(conversation_id, None)
+        if lock is None:
+            lock = await _lock_for_conversation(conversation_id)
+            await lock.acquire()
+        try:
+            conversation_id, config, snapshot, history_count, turn = await self._resume_setup(
+                session_id, order_no
+            )
+            context = self._context(turn)
+            async for event in self._events(
+                Command(resume={"order_no": order_no}), config, context
+            ):
+                yield event
+            snapshot = await self._graph.aget_state(config)
+            payload = _interrupt_value(snapshot)
+            if payload is not None:
+                for action in _interrupt_actions(payload):
+                    yield {"type": "actions", "items": [action]}
+                yield {"type": "done"}
+                return
+            state = dict(snapshot.values or {}) if snapshot else {}
+            await self._persist_new(conversation_id, state, history_count)
+            citations = state.get("citations") or turn.citations
+            if citations:
+                yield {"type": "citations", "items": citations}
+            actions = state.get("suggested_actions") or []
+            if actions:
+                yield {"type": "actions", "items": actions}
             yield {"type": "done"}
-            return
-        state = dict(snapshot.values or {}) if snapshot else {}
-        await self._persist_new(conversation_id, state, history_count)
-        citations = state.get("citations") or turn.citations
-        if citations:
-            yield {"type": "citations", "items": citations}
-        actions = state.get("suggested_actions") or []
-        if actions:
-            yield {"type": "actions", "items": actions}
-        yield {"type": "done"}
+        finally:
+            lock.release()
 
     async def validate_resume(self, session_id: str, order_no: str) -> None:
         """Validate before opening the SSE stream so /chat/resume can return 400/404."""
-        await self._resume_setup(session_id, order_no)
+        conversation_id = self._coerce_session_id(session_id)
+        await self._require_conversation(conversation_id)
+        await self._reserve(conversation_id)
+        try:
+            await self._resume_setup(session_id, order_no)
+        except BaseException:
+            self._release(conversation_id)
+            raise
 
     async def run_resume(self, session_id: str, order_no: str) -> dict:
-        conversation_id, config, snapshot, history_count, turn = await self._resume_setup(
-            session_id, order_no
-        )
-        state = await self._graph.ainvoke(
-            Command(resume={"order_no": order_no}),
-            config=config,
-            context=self._context(turn),
-        )
-        state = dict(state or {})
-        payload = _interrupt_from_result(state)
-        if payload is None:
+        conversation_id = self._coerce_session_id(session_id)
+        lock = await _lock_for_conversation(conversation_id)
+        await lock.acquire()
+        try:
+            conversation_id, config, snapshot, history_count, turn = await self._resume_setup(
+                session_id, order_no
+            )
+            state = await self._graph.ainvoke(
+                Command(resume={"order_no": order_no}),
+                config=config,
+                context=self._context(turn),
+            )
+            state = dict(state or {})
+            payload = _interrupt_from_result(state)
+            if payload is None:
+                snapshot = await self._graph.aget_state(config)
+                payload = _interrupt_value(snapshot)
+            if payload is not None:
+                return {
+                    "session_id": conversation_id,
+                    "interrupted": True,
+                    "actions": _interrupt_actions(payload),
+                    "trace": state.get("trace") or {},
+                }
+            await self._persist_new(conversation_id, state, history_count)
+            result = self._run_result(conversation_id, state, history_count)
+            result["interrupted"] = False
+            return result
+        finally:
+            lock.release()
+
+    async def _validate_ticket_confirmation(self, conversation_id: int, confirmation_id: str) -> None:
+        """校验已取锁后的工单恢复请求；失败抛 TicketResumeRejected。"""
+        snapshot = await self._graph.aget_state(thread_config(conversation_id))
+        payload = _interrupt_value(snapshot)
+        if not isinstance(payload, dict) or payload.get("type") != "ticket_confirmation":
+            raise TicketResumeRejected(409, "会话没有待确认的工单")
+        draft = payload.get("draft") or {}
+        if int(draft.get("conversation_id") or 0) != conversation_id:
+            raise TicketResumeRejected(409, "工单草稿与会话不一致")
+        if payload.get("confirmation_id") != confirmation_id:
+            raise TicketResumeRejected(409, "确认标识已失效，请重新加载")
+        evidence = (snapshot.values or {}).get("ticket_request")
+        if getattr(evidence, "to_dict", None):
+            evidence = evidence.to_dict()
+        if (not isinstance(evidence, dict) or evidence.get("status") != "active"
+                or int(evidence.get("message_id") or 0) != int(draft.get("request_message_id") or 0)):
+            raise TicketResumeRejected(409, "建单请求证据已失效，请重新发起")
+        from app.tools.builtin import build_tool_snapshot
+
+        definitions = await build_tool_snapshot(self._registry, self._provider)
+        definition = definitions.get("create_ticket")
+        if definition is None:
+            raise TicketResumeRejected(403, "create_ticket 未注册，无法建单")
+        if not self._engine.policy.load().permits(definition):
+            raise TicketResumeRejected(403, "create_ticket 权限被拒绝")
+
+    async def validate_ticket_resume(self, session_id: str, confirmation_id: str, decision: str) -> None:
+        try:
+            conversation_id = int(session_id)
+        except (TypeError, ValueError):
+            raise TicketResumeRejected(400, "session_id 必须是数字")
+        async with self._session_factory() as session:
+            conv = await ChatRepository(session).get_conversation(conversation_id)
+        if conv is None:
+            raise TicketResumeRejected(404, "会话不存在")
+        await self._reserve(conversation_id)
+        try:
+            await self._validate_ticket_confirmation(conversation_id, confirmation_id)
+        except BaseException:
+            self._release(conversation_id)
+            raise
+
+    async def ticket_resume_stream(self, session_id: str, confirmation_id: str, decision: str):
+        conversation_id = int(session_id)
+        lock = self._held_locks.pop(conversation_id, None)
+        if lock is None:
+            lock = await _lock_for_conversation(conversation_id)
+            await lock.acquire()
+        try:
+            config = thread_config(conversation_id)
+            snapshot = await self._graph.aget_state(config)
+            messages = list((snapshot.values or {}).get("messages") or [])
+            turn = TurnContext(
+                raw_question=_last_human_text(messages),
+                conversation_id=conversation_id,
+                source_files=default_source_files(),
+            )
+            history_count = len(messages)
+            context = self._context(turn)
+            async for event in self._events(
+                Command(resume={"decision": decision, "confirmation_id": confirmation_id}),
+                config, context,
+            ):
+                yield event
             snapshot = await self._graph.aget_state(config)
             payload = _interrupt_value(snapshot)
-        if payload is not None:
-            return {
-                "session_id": conversation_id,
-                "interrupted": True,
-                "actions": _interrupt_actions(payload),
-                "trace": state.get("trace") or {},
-            }
-        await self._persist_new(conversation_id, state, history_count)
-        result = self._run_result(conversation_id, state, history_count)
-        result["interrupted"] = False
-        return result
+            if payload is not None:
+                for action in _interrupt_actions(payload):
+                    yield {"type": "actions", "items": [action]}
+                yield {"type": "done"}
+                return
+            state = dict(snapshot.values or {}) if snapshot else {}
+            await self._persist_new(conversation_id, state, history_count)
+            citations = state.get("citations") or turn.citations
+            if citations:
+                yield {"type": "citations", "items": citations}
+            actions = state.get("suggested_actions") or []
+            if actions:
+                yield {"type": "actions", "items": actions}
+            yield {"type": "done"}
+        finally:
+            lock.release()
+
+    async def create_ticket_button(self, session_id: str, ticket_type: str, description: str) -> str:
+        """旧 /chat/ticket 按钮：服务端自持草稿与确认，仍走同一引擎并留审计，不自动升级。"""
+        from app.tools.builtin import build_tool_snapshot
+
+        conversation_id = self._coerce_session_id(session_id)
+        async with self._session_factory() as session:
+            conv = await ChatRepository(session).get_conversation(conversation_id)
+            if conv is None:
+                raise ValueError("会话不存在")
+            rows = await ChatRepository(session).list_messages(conversation_id)
+        user_rows = [row for row in rows if row.role.value == "user"]
+        if not user_rows:
+            raise ValueError("会话没有用户消息，无法建单")
+        newest = user_rows[-1]
+        evidence = {
+            "message_id": newest.id,
+            "quote": (newest.content or "")[:200],
+            "status": "active",
+        }
+        tool_call_id = f"btn-{uuid.uuid4().hex}"
+        args = {"ticket_type": ticket_type, "description": description}
+        context = ExecutionContext(
+            conversation_id=conversation_id,
+            tool_call_id=tool_call_id,
+            session_factory=self._session_factory,
+            ticket_request=evidence,
+            confirmation=_auto_approve_confirmation,
+            state={"route": "business", "intent": None},
+        )
+        context.escalate = False
+        definitions = await build_tool_snapshot(self._registry, self._provider)
+        message = await self._engine.execute(
+            {"name": "create_ticket", "id": tool_call_id, "args": args}, context, definitions,
+        )
+        if (getattr(message, "artifact", None) or {}).get("category") != "success":
+            raise ValueError("工单创建失败，请稍后重试")
+        return ticket_no_for(draft_from_call(args, context))
 
 
 def _iter_node_updates(payload):
