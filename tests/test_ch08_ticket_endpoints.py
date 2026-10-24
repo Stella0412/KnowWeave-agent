@@ -253,3 +253,18 @@ async def test_concurrent_same_conversation_resume_is_serialized(stack):
         )
     assert sorted([first.status_code, second.status_code]) == [200, 409]
     assert await _ticket_count(stack.session_factory) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_resume_releases_lock_and_next_resume_proceeds(stack):
+    cid, confirmation_id = await _open_ticket_interrupt(stack)
+    stale = await _post_resume(stack, {
+        "session_id": str(cid), "confirmation_id": "TC" + "0" * 30, "decision": "confirm",
+    })
+    assert stale.status_code == 409
+    # 校验失败必须释放会话锁，否则后续正确恢复会被永久阻塞。
+    ok = await _post_resume(stack, {
+        "session_id": str(cid), "confirmation_id": confirmation_id, "decision": "confirm",
+    })
+    assert ok.status_code == 200
+    assert await _ticket_count(stack.session_factory) == 1

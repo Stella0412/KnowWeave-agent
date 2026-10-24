@@ -1,20 +1,19 @@
 """ch08 业务工具的数据访问与检索助手。
 
 内置工具的注册与 execute 适配迁移到 app/tools/builtin.py；这里保留仍被
-routers、脚本与直接单测使用的数据访问助手：订单查询、FAQ 检索、建单落库。
+routers、脚本与直接单测使用的数据访问助手：订单查询、FAQ 检索。
 query_logistics 已移交 MCP Server，query_product / submit_refund 已整体迁入
-builtin.py，不再以 @tool 形式暴露。
+builtin.py，不再以 @tool 形式暴露。建单已改走 create_ticket_once（T8 稳定工单号），
+旧的 create_ticket_record / build_create_ticket 路径已删除。
 """
 
 import asyncio
 import logging
-from typing import Literal
 
 from langchain_core.tools import BaseTool, tool
 
 from app.core.retrieval import UNAVAILABLE
-from app.db.models import ConversationStatus
-from app.db.repository import ChatRepository, LowConfidenceRepository
+from app.db.repository import LowConfidenceRepository
 from app.rag.pipeline import RagResult, TurnContext, default_source_files, run_pipeline
 from app.rag.refusal import pool_record, refusal_text
 
@@ -98,34 +97,3 @@ async def _record_low_confidence(session_factory, turn: TurnContext | None, resu
         logger.warning("低置信度问题落池失败（不影响本轮回答）", exc_info=True)
 
 
-async def create_ticket_record(
-    session_factory,
-    conversation_id: int,
-    description: str,
-    ticket_type,
-    *,
-    escalate: bool = True,
-) -> str:
-    async with session_factory() as session:
-        repo = ChatRepository(session)
-        ticket_no = await repo.create_ticket(conversation_id, description, ticket_type)
-        if escalate:
-            await repo.set_conversation_status(conversation_id, ConversationStatus.ESCALATED)
-        await session.commit()
-    return ticket_no
-
-
-def build_create_ticket(
-    session_factory, conversation_id: int, *, escalate: bool = True
-) -> BaseTool:
-    @tool
-    async def create_ticket(
-        description: str, ticket_type: Literal["售后", "投诉", "咨询"]
-    ) -> str:
-        """创建人工工单。当用户投诉、维权、或要求转人工等需要人工介入时调用。"""
-        ticket_no = await create_ticket_record(
-            session_factory, conversation_id, description, ticket_type, escalate=escalate
-        )
-        return f"已为您创建工单，工单号 {ticket_no}，人工客服会尽快处理。"
-
-    return create_ticket

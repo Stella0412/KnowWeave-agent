@@ -137,3 +137,45 @@ async def test_ticket_endpoint_404_for_missing_conversation(session_factory):
             json={"session_id": "99999", "ticket_type": "售后", "description": "x"},
         )
     assert response.status_code == 404
+
+
+class _FaultingEngine:
+    """建单引擎内部故障：永远返回非 success 的 ToolMessage，映射到 5xx。"""
+
+    async def execute(self, tool_call, context, definitions):
+        from langchain_core.messages import ToolMessage
+        return ToolMessage(
+            content="工具执行失败",
+            tool_call_id=tool_call.get("id", ""),
+            name=tool_call.get("name", ""),
+            artifact={"category": "fault", "actions": []},
+        )
+
+
+@pytest.mark.asyncio
+async def test_ticket_endpoint_engine_fault_returns_500(session_factory):
+    async with session_factory() as session:
+        repo = ChatRepository(session)
+        cid = await repo.create_conversation()
+        await repo.add_message(cid, role="user", content="商品破损")
+        await session.commit()
+
+    registry = ToolRegistry()
+    register_builtins(registry)
+    service = ChatService(
+        model=_UnusedModel(), intent_model=_UnusedModel(), session_factory=session_factory,
+        graph=build_graph(checkpointer=InMemorySaver()), settings=Settings(_env_file=None),
+        registry=registry, engine=_FaultingEngine(),
+    )
+    app = FastAPI()
+    app.include_router(chat_module.router)
+    app.state.chat_service = service
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/chat/ticket",
+            json={"session_id": str(cid), "ticket_type": "售后", "description": "商品破损"},
+        )
+    assert response.status_code == 500
+    assert "工单创建失败" in response.json()["detail"]

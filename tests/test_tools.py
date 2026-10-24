@@ -1,13 +1,9 @@
 import pytest
 
-from app.db.models import ConversationStatus
-from app.db.repository import ChatRepository
 from app.db.seed import seed_orders
 from app.tools.business import (
-    build_create_ticket,
     build_query_faq,
     build_query_order,
-    create_ticket_record,
 )
 
 
@@ -37,33 +33,6 @@ async def test_query_faq_hit_and_miss(monkeypatch):
     miss = await tool.ainvoke({"keyword": "邮费"})
     assert "7 天无理由退货" in hit
     assert "人工" in miss
-
-
-@pytest.mark.asyncio
-async def test_create_ticket_writes_and_escalates(session_factory):
-    async with session_factory() as session:
-        cid = await ChatRepository(session).create_conversation()
-        await session.commit()
-    tool = build_create_ticket(session_factory, cid)
-    out = await tool.ainvoke({"description": "商品坏了", "ticket_type": "售后"})
-    assert "工单" in out
-    async with session_factory() as session:
-        conv = await ChatRepository(session).get_conversation(cid)
-    assert conv.status is ConversationStatus.ESCALATED
-
-
-@pytest.mark.asyncio
-async def test_create_ticket_record_can_skip_escalation(session_factory):
-    async with session_factory() as session:
-        cid = await ChatRepository(session).create_conversation()
-        await session.commit()
-    ticket_no = await create_ticket_record(
-        session_factory, cid, "商品破损", "售后", escalate=False
-    )
-    assert ticket_no.startswith("T")
-    async with session_factory() as session:
-        conv = await ChatRepository(session).get_conversation(cid)
-    assert conv.status is ConversationStatus.ACTIVE
 
 
 def test_tool_timeout_gives_query_faq_a_longer_budget(monkeypatch):

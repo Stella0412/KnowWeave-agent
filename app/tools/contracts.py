@@ -42,6 +42,7 @@ class ExecutionContext:
     state: Any = None
     ticket_decision: str | None = None
     confirmation_reason: str | None = None
+    escalate: bool = True
 
 
 @dataclass

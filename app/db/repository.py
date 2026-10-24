@@ -189,6 +189,10 @@ class ChatRepository:
     async def create_ticket(
         self, conversation_id: int, description: str, ticket_type: TicketType | str
     ) -> str:
+        # ch08 起建单改走 ticket_confirmation.create_ticket_once（稳定 T8+sha256 工单号）。
+        # 本方法已无生产调用方，仅 tests/test_repository.py 的遗留单测仍依赖它验证仓库层
+        # 自己的旧工单号生成逻辑（T+日期+序号），故保留；新代码不要再引用。
+
         prefix = "T" + datetime.now().strftime("%Y%m%d")
         result = await self._session.execute(
             select(func.count())

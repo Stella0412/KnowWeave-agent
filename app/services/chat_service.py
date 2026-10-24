@@ -49,6 +49,36 @@ class TicketResumeRejected(Exception):
         self.message = message
 
 
+class TicketEngineFault(RuntimeError):
+    """旧 /chat/ticket 按钮的建单引擎内部故障（未产出成功结果），映射到 5xx。"""
+
+
+class _ResumeLock:
+    """校验阶段持有的会话锁：SSE 流接管后由流 finally 释放；若流从未被迭代，则由
+    SSE 响应的 finally 兜底释放，避免锁被永久持有（会话级串行化不能因此死锁）。"""
+
+    __slots__ = ("_held_locks", "conversation_id", "lock", "claimed")
+
+    def __init__(self, held_locks: dict, conversation_id: int, lock: asyncio.Lock) -> None:
+        self._held_locks = held_locks
+        self.conversation_id = conversation_id
+        self.lock = lock
+        self.claimed = False
+
+    def claim(self) -> asyncio.Lock:
+        """SSE 流开始接管锁；此后由流的 finally 负责释放。"""
+        self.claimed = True
+        return self.lock
+
+    def release_if_unclaimed(self) -> None:
+        """仅当流从未接管时释放；已接管则由流自身释放，这里是无操作。"""
+        if self.claimed:
+            return
+        if self._held_locks.get(self.conversation_id) is self:
+            self._held_locks.pop(self.conversation_id, None)
+        self.lock.release()
+
+
 async def _lock_for_conversation(conversation_id: int) -> asyncio.Lock:
     async with _conversation_locks_guard:
         lock = _conversation_locks.get(conversation_id)
@@ -192,7 +222,7 @@ class ChatService:
         )
         # SSE 恢复路由里，validate 阶段先取锁并暂存，stream 生成器接管后在 finally 释放，
         # 让锁覆盖「校验 + 流式完成/断开」全过程。键为 conversation_id。
-        self._held_locks: dict[int, asyncio.Lock] = {}
+        self._held_locks: dict[int, _ResumeLock] = {}
 
     def _resolve_tool_runtime(self, registry, provider, engine):
         from app.tools.audit import write_audit
@@ -255,17 +285,18 @@ class ChatService:
         if conv is None:
             raise ValueError("会话不存在")
 
-    async def _reserve(self, conversation_id: int) -> asyncio.Lock:
+    async def _reserve(self, conversation_id: int) -> _ResumeLock:
         """为校验阶段取会话锁并暂存，供后续流式生成器接管释放。"""
         lock = await _lock_for_conversation(conversation_id)
         await lock.acquire()
-        self._held_locks[conversation_id] = lock
-        return lock
+        guard = _ResumeLock(self._held_locks, conversation_id, lock)
+        self._held_locks[conversation_id] = guard
+        return guard
 
     def _release(self, conversation_id: int) -> None:
-        lock = self._held_locks.pop(conversation_id, None)
-        if lock is not None:
-            lock.release()
+        guard = self._held_locks.pop(conversation_id, None)
+        if guard is not None:
+            guard.release_if_unclaimed()
 
     async def _reject_if_ticket_pending(self, conversation_id: int) -> None:
         """建单确认待处理时拒绝新聊天轮次，避免在 _prepare 落库用户消息前进入本轮。"""
@@ -568,8 +599,10 @@ class ChatService:
 
     async def resume_stream(self, session_id: str, order_no: str):
         conversation_id = self._coerce_session_id(session_id)
-        lock = self._held_locks.pop(conversation_id, None)
-        if lock is None:
+        guard = self._held_locks.pop(conversation_id, None)
+        if guard is not None:
+            lock = guard.claim()
+        else:
             lock = await _lock_for_conversation(conversation_id)
             await lock.acquire()
         try:
@@ -600,16 +633,20 @@ class ChatService:
         finally:
             lock.release()
 
-    async def validate_resume(self, session_id: str, order_no: str) -> None:
-        """Validate before opening the SSE stream so /chat/resume can return 400/404."""
+    async def validate_resume(self, session_id: str, order_no: str) -> _ResumeLock:
+        """Validate before opening the SSE stream so /chat/resume can return 400/404.
+
+        校验成功后返回已持有的会话锁守卫；路由把守卫传给 SSE 响应，在流未接管时兜底释放。
+        """
         conversation_id = self._coerce_session_id(session_id)
         await self._require_conversation(conversation_id)
-        await self._reserve(conversation_id)
+        guard = await self._reserve(conversation_id)
         try:
             await self._resume_setup(session_id, order_no)
         except BaseException:
             self._release(conversation_id)
             raise
+        return guard
 
     async def run_resume(self, session_id: str, order_no: str) -> dict:
         conversation_id = self._coerce_session_id(session_id)
@@ -669,7 +706,7 @@ class ChatService:
         if not self._engine.policy.load().permits(definition):
             raise TicketResumeRejected(403, "create_ticket 权限被拒绝")
 
-    async def validate_ticket_resume(self, session_id: str, confirmation_id: str, decision: str) -> None:
+    async def validate_ticket_resume(self, session_id: str, confirmation_id: str, decision: str) -> _ResumeLock:
         try:
             conversation_id = int(session_id)
         except (TypeError, ValueError):
@@ -678,17 +715,20 @@ class ChatService:
             conv = await ChatRepository(session).get_conversation(conversation_id)
         if conv is None:
             raise TicketResumeRejected(404, "会话不存在")
-        await self._reserve(conversation_id)
+        guard = await self._reserve(conversation_id)
         try:
             await self._validate_ticket_confirmation(conversation_id, confirmation_id)
         except BaseException:
             self._release(conversation_id)
             raise
+        return guard
 
     async def ticket_resume_stream(self, session_id: str, confirmation_id: str, decision: str):
         conversation_id = int(session_id)
-        lock = self._held_locks.pop(conversation_id, None)
-        if lock is None:
+        guard = self._held_locks.pop(conversation_id, None)
+        if guard is not None:
+            lock = guard.claim()
+        else:
             lock = await _lock_for_conversation(conversation_id)
             await lock.acquire()
         try:
@@ -761,7 +801,7 @@ class ChatService:
             {"name": "create_ticket", "id": tool_call_id, "args": args}, context, definitions,
         )
         if (getattr(message, "artifact", None) or {}).get("category") != "success":
-            raise ValueError("工单创建失败，请稍后重试")
+            raise TicketEngineFault("工单创建失败，请稍后重试")
         return ticket_no_for(draft_from_call(args, context))
 
 

@@ -171,6 +171,21 @@ async def test_new_chat_while_pending_is_rejected_before_user_message_persisted(
 
 
 @pytest.mark.asyncio
+async def test_abandoned_resume_stream_releases_conversation_lock(session_factory):
+    """校验成功后若 SSE 流从未被迭代（客户端在响应开始前断开），会话锁必须兜底释放。"""
+    stack = _build_service(session_factory)
+    cid, confirmation_id = await _open_interrupt(stack.service)
+    guard = await stack.service.validate_ticket_resume(str(cid), confirmation_id, "confirm")
+    assert cid in stack.service._held_locks
+    # 等价于 SSE 响应 finally 里的兜底释放（流从未接管锁）。
+    guard.release_if_unclaimed()
+    assert cid not in stack.service._held_locks
+    # 后续恢复仍能取到锁并正常建单，而不是被上一次的锁永久阻塞。
+    [e async for e in stack.service.ticket_resume_stream(str(cid), confirmation_id, "confirm")]
+    assert len(await _ticket_rows(session_factory)) == 1
+
+
+@pytest.mark.asyncio
 async def test_wrong_kind_cross_calls_are_rejected(session_factory):
     await seed_orders(session_factory)
     # 方向一：工单中断不能走订单恢复。

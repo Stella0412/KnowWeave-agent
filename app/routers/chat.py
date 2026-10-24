@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db.engine import SessionFactory
 from app.db.repository import ChatRepository, OrderRepository, RefundRepository
 from app.schemas.chat import ChatRequest, RefundRequest, ResumeRequest, TicketResumeRequest
-from app.services.chat_service import ChatService, TicketResumeRejected
+from app.services.chat_service import ChatService, TicketEngineFault, TicketResumeRejected
 from app.services.refund_policy import check_refund_eligibility
 from app.tools.business import REFUND_REASON_CATEGORIES
 
@@ -50,16 +50,36 @@ async def _sse_data(agen):
         yield format_sse_event(data_str=json.dumps(event, ensure_ascii=False))
 
 
+def _locked_sse_response(guard, agen) -> EventSourceResponse:
+    """把校验阶段持有的会话锁守卫挂到 SSE 响应上：响应结束（含断开/未迭代）时兜底释放。
+
+    流被正常迭代时，流的 finally 已释放并由 claim 标记接管，这里的兜底是无操作；
+    只有当流从未被迭代（例如校验后、响应开始前客户端断开）时才真正释放。
+    """
+
+    class _LockedEventSourceResponse(EventSourceResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                if guard is not None:
+                    guard.release_if_unclaimed()
+
+    return _LockedEventSourceResponse(agen)
+
+
 @router.post("/resume")
 async def chat_resume(req: ResumeRequest, request: Request) -> EventSourceResponse:
     service = _get_chat_service(request)
     try:
-        await service.validate_resume(req.session_id, req.order_no)
+        guard = await service.validate_resume(req.session_id, req.order_no)
     except ValueError as exc:
         message = str(exc)
         status = 400 if ("session_id" in message or "待选择" in message) else 404
         raise HTTPException(status_code=status, detail=message) from exc
-    return EventSourceResponse(_sse_data(service.resume_stream(req.session_id, req.order_no)))
+    return _locked_sse_response(
+        guard, _sse_data(service.resume_stream(req.session_id, req.order_no))
+    )
 
 
 @router.post("/agent/resume")
@@ -116,6 +136,8 @@ async def create_ticket_endpoint(req: TicketRequest, request: Request) -> dict:
         ticket_no = await service.create_ticket_button(
             req.session_id, req.ticket_type, req.description
         )
+    except TicketEngineFault as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
         message = str(exc)
         status = 404 if message == "会话不存在" else 400
@@ -127,11 +149,12 @@ async def create_ticket_endpoint(req: TicketRequest, request: Request) -> dict:
 async def chat_ticket_resume(req: TicketResumeRequest, request: Request) -> EventSourceResponse:
     service = _get_chat_service(request)
     try:
-        await service.validate_ticket_resume(req.session_id, req.confirmation_id, req.decision)
+        guard = await service.validate_ticket_resume(req.session_id, req.confirmation_id, req.decision)
     except TicketResumeRejected as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    return EventSourceResponse(
+    return _locked_sse_response(
+        guard,
         _sse_data(service.ticket_resume_stream(
             req.session_id, req.confirmation_id, req.decision,
-        ))
+        )),
     )

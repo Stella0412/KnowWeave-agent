@@ -143,7 +143,7 @@ async def _create_ticket(arguments, context):
 
     draft = draft_from_call(arguments, context)
     ticket_no = await create_ticket_once(
-        context.session_factory, draft, escalate=getattr(context, "escalate", True)
+        context.session_factory, draft, escalate=context.escalate
     )
     return ToolOutcome(
         "success",
