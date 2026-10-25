@@ -116,5 +116,18 @@ class Settings(BaseSettings):
     summary_retry_cooldown_seconds: int = 60
     log_file: str = "log/app.log"
 
+    # ch09 观测
+    langfuse_base_url: str = "http://localhost:3000"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_tracing_enabled: bool = True
+    langfuse_project_id: str = ""
+    model_prices_path: str = "config/model_prices.json"
+
+    # ch09 飞轮
+    low_conf_merge_threshold: float = 0.92
+    low_conf_merge_limit: int = 2000
+    low_conf_merge_batch_size: int = 64
+
 
 settings = Settings()

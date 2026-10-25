@@ -1,0 +1,7 @@
+{
+  "models": {
+    "deepseek-chat": {"input_per_million": null, "output_per_million": null},
+    "BAAI/bge-m3": {"input_per_million": null, "output_per_million": null},
+    "BAAI/bge-reranker-v2-m3": {"input_per_million": null, "output_per_million": null}
+  }
+}
