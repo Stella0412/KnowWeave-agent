@@ -1,3 +1,11 @@
+import sys
+
+# Windows 下 stdio 被重定向到文件时按系统 locale（cp936）编码，中文 trace 会与
+# UTF-8 的 app.log 混成乱码；必须在其余 import（可能已向 stderr 写过东西）之前统一。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
