@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -539,6 +539,13 @@ class LowConfidenceRepository:
                     .order_by(LowConfidenceQuestion.id)
                 )
             ).scalars()
+        )
+
+    async def repoint_children(self, old_root: int, new_root: int) -> None:
+        await self._session.execute(
+            update(LowConfidenceQuestion)
+            .where(LowConfidenceQuestion.merged_into_id == old_root)
+            .values(merged_into_id=new_root)
         )
 
     async def list_roots(
