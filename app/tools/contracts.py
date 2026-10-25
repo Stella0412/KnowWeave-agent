@@ -43,6 +43,7 @@ class ExecutionContext:
     ticket_decision: str | None = None
     confirmation_reason: str | None = None
     escalate: bool = True
+    turn_token: str | None = None
 
 
 @dataclass
@@ -70,6 +71,7 @@ class AuditRecord:
     error_message: str | None
     retry_count: int
     duration_ms: int
+    turn_token: str | None = None
 
 
 class TransientToolError(Exception):

@@ -34,6 +34,7 @@ async def write_audit(session_factory, record: AuditRecord) -> None:
             session.add(
                 ToolAuditLog(
                     conversation_id=record.conversation_id,
+                    turn_token=record.turn_token,
                     tool_call_id=record.tool_call_id,
                     tool_name=record.tool_name,
                     tool_source=source,

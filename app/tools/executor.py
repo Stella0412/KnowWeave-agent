@@ -9,6 +9,7 @@ from langgraph.errors import GraphBubbleUp
 from app.tools.contracts import AuditRecord, ToolOutcome, TransientToolError
 from app.tools.formatting import format_outcome, summarize_for_audit
 from app.tools.validation import argument_errors
+from app.observability.spans import _summarize_args
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,13 @@ class ToolEngine:
     AuditRecord）、timeout、retries、sleep（注入退避等待，默认 asyncio.sleep）。
     """
 
-    def __init__(self, policy, audit_writer, timeout, retries, sleep=asyncio.sleep) -> None:
+    def __init__(self, policy, audit_writer, timeout, retries, sleep=asyncio.sleep, tracer=None) -> None:
         self.policy = policy
         self.audit_writer = audit_writer
         self.timeout = timeout
         self.retries = retries
         self.sleep = sleep
+        self.tracer = tracer
 
     def _resolve_timeout(self, name: str) -> float:
         """timeout 既可以是标量，也可以是按工具名给预算的 callable。"""
@@ -54,7 +56,28 @@ class ToolEngine:
             return self.timeout(name)
         return self.timeout
 
-    async def execute(self, tool_call: dict, context, tools_by_name: dict) -> ToolMessage:
+    async def execute(self, tool_call, context, tools_by_name):
+        name = tool_call.get("name", "")
+        args = tool_call.get("args") or {}
+        if self.tracer is None:
+            return await self._execute(tool_call, context, tools_by_name)
+        with self.tracer(
+            name, input=_summarize_args(args),
+            metadata={"tool_call_id": context.tool_call_id,
+                      "turn_token": getattr(context, "turn_token", None),
+                      "retry": 0},
+        ) as span:
+            message = await self._execute(tool_call, context, tools_by_name)
+            if span is not None:
+                category = (getattr(message, "artifact", None) or {}).get("category")
+                span.update(
+                    output=str(message.content)[:500],
+                    level="DEFAULT" if category == "success" else "ERROR",
+                    status_message=None if category == "success" else str(message.content)[:500],
+                )
+            return message
+
+    async def _execute(self, tool_call: dict, context, tools_by_name: dict) -> ToolMessage:
         name = tool_call.get("name", "")
         call_id = tool_call.get("id", "")
         args = tool_call.get("args")
@@ -232,6 +255,7 @@ class ToolEngine:
         record = AuditRecord(
             conversation_id=context.conversation_id,
             tool_call_id=context.tool_call_id,
+            turn_token=getattr(context, "turn_token", None),
             tool_name=name,
             tool_source=definition.source if definition is not None else "builtin",
             mcp_server=definition.server if definition is not None else None,

@@ -302,6 +302,7 @@ async def agent_tools(state, runtime):
             ticket_request=state.get("ticket_request"),
             confirmation=confirm_ticket_call,
             state=state,
+            turn_token=getattr(context, "turn_token", None),
         )
     else:
         exec_context = ExecutionContext(
@@ -310,6 +311,7 @@ async def agent_tools(state, runtime):
             session_factory=context.session_factory,
             turn=context.turn,
             state=state,
+            turn_token=getattr(context, "turn_token", None),
         )
     message = await engine.execute(call, exec_context, definitions)
 

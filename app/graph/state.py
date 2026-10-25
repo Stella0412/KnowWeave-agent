@@ -80,3 +80,4 @@ class GraphContext:
     registry: Any = None
     provider: Any = None
     engine: Any = None
+    turn_token: str | None = None
