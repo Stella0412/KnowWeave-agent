@@ -1,11 +1,19 @@
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from app.services.flywheel_service import ReviewRejected
 
 router = APIRouter(prefix="/review", tags=["review"])
 _VALID_STATUS = {"待处理", "已关闭", "已忽略"}
+_STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
+
+
+@router.get("", include_in_schema=False)
+def page() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "review.html")
 
 
 class AnswerRequest(BaseModel):

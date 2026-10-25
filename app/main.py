@@ -20,9 +20,15 @@ from app.db.engine import SessionFactory, engine
 from app.db.seed import seed_orders
 from app.graph.build import build_graph
 from app.graph.runtime import open_checkpointer
-from app.routers import chat, conversations, extract, feedback, rag_eval
+from app.observability.metrics import TurnMetricsWriter
+from app.observability.spans import tool_span
+from app.observability.wiring import build_observability
+from app.routers import chat, conversations, extract, feedback, observability, rag_eval, review
 from app.services.chat_service import build_chat_service
 from app.services.context_manager import log_startup_budget
+from app.services.feedback_service import FeedbackService
+from app.services.flywheel_service import FlywheelService
+from app.services.observability_service import ObservabilityService
 from app.services.token_counter import TokenCounter
 from app.tools.audit import write_audit
 from app.tools.builtin import register_builtins
@@ -40,6 +46,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logging.getLogger("knowweave.turn").setLevel(logging.INFO)
+logger = logging.getLogger("knowweave.turn")
 
 
 def validate_config(s: Settings | None = None) -> None:
@@ -65,9 +72,12 @@ async def lifespan(app: FastAPI):
         print(f"[警告] 数据库不可用，跳过建表: {e}")
 
     async with open_checkpointer(settings.langgraph_checkpoint_path) as saver:
+        bundle = build_observability(settings, counter=counter)
+        flywheel = FlywheelService(SessionFactory, settings=settings)
         app.state.graph = build_graph(
             checkpointer=saver,
             max_agent_steps=settings.max_agent_steps,
+            callbacks=bundle.callbacks,
         )
         registry = ToolRegistry()
         register_builtins(registry)
@@ -75,28 +85,56 @@ async def lifespan(app: FastAPI):
         provider = MCPToolProvider(
             create_mcp_client(settings), policy, settings.mcp_discovery_timeout,
         )
+        tracer = None
+        if bundle.langfuse_client is not None:
+            def tracer(name, *, input, metadata):
+                return tool_span(
+                    bundle.langfuse_client, name, input=input, metadata=metadata,
+                )
         tool_engine = ToolEngine(
             policy,
             lambda record: write_audit(SessionFactory, record),
             timeout=lambda name: tool_timeout(name, settings.tool_timeout),
             retries=settings.tool_retries,
+            tracer=tracer,
         )
         app.state.chat_service = build_chat_service(
-            app.state.graph, settings=settings, session_factory=SessionFactory,
-            registry=registry, provider=provider, engine=tool_engine,
+            app.state.graph,
+            settings=settings,
+            session_factory=SessionFactory,
+            registry=registry,
+            provider=provider,
+            engine=tool_engine,
+            metrics_handler=bundle.handler,
+            turn_metrics_writer=TurnMetricsWriter(SessionFactory),
+            trace_scope=bundle.trace_scope,
+        )
+        app.state.flywheel = flywheel
+        app.state.feedback_service = FeedbackService(
+            SessionFactory, app.state.chat_service, flywheel,
+        )
+        app.state.observability_service = ObservabilityService(
+            SessionFactory, settings,
         )
         try:
             yield
         finally:
             await app.state.chat_service.shutdown()
+            if bundle.langfuse_client is not None:
+                try:
+                    bundle.langfuse_client.flush()
+                except Exception:
+                    logger.warning("Langfuse flush 失败", exc_info=True)
 
 
 app = FastAPI(title="知序智能客服", lifespan=lifespan)
 app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(extract.router)
-app.include_router(feedback.router)
 app.include_router(rag_eval.router)
+app.include_router(feedback.router)
+app.include_router(review.router)
+app.include_router(observability.router)
 
 
 @app.get("/", include_in_schema=False)
