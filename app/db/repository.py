@@ -1,9 +1,11 @@
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    AnswerFeedback,
+    AnswerRating,
     Conversation,
     ConversationStatus,
     ConversationSummary,
@@ -13,6 +15,7 @@ from app.db.models import (
     KnowledgeChunk,
     LowConfidenceQuestion,
     LowConfidenceSource,
+    LowConfidenceStatus,
     Message,
     MessageRole,
     Order,
@@ -23,6 +26,7 @@ from app.db.models import (
     Ticket,
     TicketStatus,
     TicketType,
+    TurnMetrics,
     VectorizeStatus,
 )
 
@@ -213,6 +217,58 @@ class ChatRepository:
         return ticket_no
 
 
+class FeedbackRepository:
+    """👍/👎 反馈读写。方法只改 session，由调用方 commit。"""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def get_by_message(self, message_id: int) -> AnswerFeedback | None:
+        return (
+            await self._session.execute(
+                select(AnswerFeedback).where(AnswerFeedback.message_id == message_id)
+            )
+        ).scalars().first()
+
+    async def add(
+        self, conversation_id: int, message_id: int,
+        rating: AnswerRating | str, comment: str | None,
+    ) -> AnswerFeedback:
+        if isinstance(rating, str):
+            rating = AnswerRating(rating)
+        row = AnswerFeedback(
+            conversation_id=conversation_id, message_id=message_id,
+            rating=rating, comment=comment,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def comments_for_messages(self, ids: list[int]) -> dict[int, str | None]:
+        if not ids:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(AnswerFeedback.message_id, AnswerFeedback.comment)
+                .where(AnswerFeedback.message_id.in_(ids))
+            )
+        ).all()
+        return {int(message_id): comment for message_id, comment in rows}
+
+
+class MetricsRepository:
+    """每轮链路指标落库。方法只改 session，由调用方 commit。"""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def add(self, **fields) -> TurnMetrics:
+        row = TurnMetrics(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+
 class KnowledgeRepository:
     """知识库 chunk 与 QA 暂存的读写封装。方法只改 session，由调用方 commit。"""
 
@@ -269,13 +325,15 @@ class KnowledgeRepository:
             await self._session.flush()
         return ids
 
-    async def list_pending(self, limit: int = 200) -> list[KnowledgeChunk]:
-        stmt = (
-            select(KnowledgeChunk)
-            .where(KnowledgeChunk.vectorize_status == VectorizeStatus.PENDING)
-            .order_by(KnowledgeChunk.id)
-            .limit(limit)
+    async def list_pending(
+        self, limit: int = 200, ids: list[int] | None = None,
+    ) -> list[KnowledgeChunk]:
+        stmt = select(KnowledgeChunk).where(
+            KnowledgeChunk.vectorize_status == VectorizeStatus.PENDING
         )
+        if ids is not None:
+            stmt = stmt.where(KnowledgeChunk.id.in_(ids))
+        stmt = stmt.order_by(KnowledgeChunk.id).limit(limit)
         return list((await self._session.execute(stmt)).scalars())
 
     async def mark_vectorized(self, chunk_id: int, vector_id: str) -> None:
@@ -301,6 +359,19 @@ class KnowledgeRepository:
         ).all()
         return [(q, a) for q, a in rows]
 
+    async def list_existing_qa_with_ids(self) -> list[tuple[int, str, str, VectorizeStatus]]:
+        rows = (
+            await self._session.execute(
+                select(
+                    KnowledgeChunk.id,
+                    KnowledgeChunk.questions,
+                    KnowledgeChunk.answer,
+                    KnowledgeChunk.vectorize_status,
+                ).order_by(KnowledgeChunk.id)
+            )
+        ).all()
+        return [(int(i), q or "", a or "", s) for i, q, a, s in rows]
+
     async def count_by_status(self, status: VectorizeStatus) -> int:
         stmt = (
             select(func.count())
@@ -320,11 +391,13 @@ class KnowledgeRepository:
         await self._session.flush()
 
     async def add_staging(
-        self, batch_no: str, source_ref: str | None, question: str, answer: str
+        self, batch_no: str, source_ref: str | None, question: str, answer: str,
+        status: StagingStatus = StagingStatus.EXTRACTED,
     ) -> None:
         self._session.add(
             QAExtractionStaging(
-                batch_no=batch_no, source_ref=source_ref, question=question, answer=answer
+                batch_no=batch_no, source_ref=source_ref, question=question,
+                answer=answer, status=status,
             )
         )
 
@@ -367,6 +440,119 @@ class LowConfidenceRepository:
         self._session.add(row)
         await self._session.flush()
         return row
+
+    async def get(self, question_id: int) -> LowConfidenceQuestion | None:
+        return await self._session.get(LowConfidenceQuestion, question_id)
+
+    async def add_question(
+        self, *, conversation_id, raw_question, source, reason, message_id,
+        fingerprint, merged_into_id, duplicate_count, status, citations,
+        knowledge_chunk_id, resolution, last_seen_at=None,
+    ) -> LowConfidenceQuestion:
+        row = LowConfidenceQuestion(
+            conversation_id=conversation_id, raw_question=raw_question,
+            source=source, reason=reason, message_id=message_id,
+            fingerprint=fingerprint, merged_into_id=merged_into_id,
+            duplicate_count=duplicate_count, status=status,
+            citations=citations, knowledge_chunk_id=knowledge_chunk_id,
+            resolution=resolution,
+            last_seen_at=last_seen_at or datetime.now(),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_for_update(self, question_id: int) -> LowConfidenceQuestion | None:
+        return (
+            await self._session.execute(
+                select(LowConfidenceQuestion)
+                .where(LowConfidenceQuestion.id == question_id)
+                .with_for_update()
+            )
+        ).scalars().first()
+
+    async def get_root_for_update(self, fingerprint: str) -> LowConfidenceQuestion | None:
+        return (
+            await self._session.execute(
+                select(LowConfidenceQuestion)
+                .where(
+                    LowConfidenceQuestion.fingerprint == fingerprint,
+                    LowConfidenceQuestion.merged_into_id.is_(None),
+                )
+                .order_by(
+                    case(
+                        (LowConfidenceQuestion.status == LowConfidenceStatus.PENDING, 0),
+                        else_=1,
+                    ),
+                    LowConfidenceQuestion.id,
+                )
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalars().first()
+
+    async def get_any_for_update(self, fingerprint: str) -> LowConfidenceQuestion | None:
+        return (
+            await self._session.execute(
+                select(LowConfidenceQuestion)
+                .where(LowConfidenceQuestion.fingerprint == fingerprint)
+                .order_by(LowConfidenceQuestion.id.desc())
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalars().first()
+
+    async def list_children(self, root_id: int) -> list[LowConfidenceQuestion]:
+        return list(
+            (
+                await self._session.execute(
+                    select(LowConfidenceQuestion)
+                    .where(LowConfidenceQuestion.merged_into_id == root_id)
+                    .order_by(LowConfidenceQuestion.id)
+                )
+            ).scalars()
+        )
+
+    async def list_roots(
+        self, status: LowConfidenceStatus | str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> list[LowConfidenceQuestion]:
+        stmt = select(LowConfidenceQuestion).where(
+            LowConfidenceQuestion.merged_into_id.is_(None)
+        )
+        if status is not None:
+            if isinstance(status, str):
+                status = LowConfidenceStatus(status)
+            stmt = stmt.where(LowConfidenceQuestion.status == status)
+        stmt = (
+            stmt.order_by(
+                LowConfidenceQuestion.duplicate_count.desc(),
+                LowConfidenceQuestion.last_seen_at.desc(),
+                LowConfidenceQuestion.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def count_roots(self, status: LowConfidenceStatus | str | None = None) -> int:
+        stmt = select(func.count()).select_from(LowConfidenceQuestion).where(
+            LowConfidenceQuestion.merged_into_id.is_(None)
+        )
+        if status is not None:
+            if isinstance(status, str):
+                status = LowConfidenceStatus(status)
+            stmt = stmt.where(LowConfidenceQuestion.status == status)
+        return int((await self._session.execute(stmt)).scalar() or 0)
+
+    async def latest_assistant_message_id(self, conversation_id: int) -> int | None:
+        stmt = select(func.max(Message.id)).where(
+            Message.conversation_id == conversation_id,
+            Message.role == MessageRole.ASSISTANT,
+            Message.content.is_not(None),
+            func.trim(Message.content) != "",
+        )
+        return (await self._session.execute(stmt)).scalar()
 
     async def list_questions(
         self, source: str | None = None, limit: int = 50
