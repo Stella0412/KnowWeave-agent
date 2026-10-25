@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 from weakref import WeakValueDictionary
 
@@ -22,6 +23,7 @@ from app.config import settings as default_settings
 from app.db.repository import ChatRepository, OrderRepository
 from app.graph.runtime import normalize_stream_event, thread_config
 from app.graph.state import GraphContext
+from app.observability.context import TurnObserver, observer_scope
 from app.rag.evidence import cap_citations
 from app.rag.pipeline import TurnContext, default_source_files
 from app.services.context_manager import ContextManager
@@ -178,6 +180,15 @@ class _Prepared:
     history_count: int
 
 
+@dataclass
+class _TurnRun:
+    conversation_id: int
+    token: str
+    started: float
+    config: dict
+    finished: bool = False
+
+
 class ChatService:
     def __init__(
         self,
@@ -199,6 +210,9 @@ class ChatService:
         registry=None,
         provider=None,
         engine=None,
+        metrics_handler=None,
+        turn_metrics_writer=None,
+        trace_scope=None,
     ):
         self._settings = settings or default_settings
         self._counter = counter or TokenCounter(
@@ -221,6 +235,9 @@ class ChatService:
         self._registry, self._provider, self._engine = self._resolve_tool_runtime(
             registry, provider, engine,
         )
+        self._metrics_handler = metrics_handler
+        self._turn_metrics_writer = turn_metrics_writer
+        self._trace_scope = trace_scope
         # SSE 恢复路由里，validate 阶段先取锁并暂存，stream 生成器接管后在 finally 释放，
         # 让锁覆盖「校验 + 流式完成/断开」全过程。键为 conversation_id。
         self._held_locks: dict[int, _ResumeLock] = {}
@@ -245,7 +262,7 @@ class ChatService:
             )
         return registry, provider, engine
 
-    def _context(self, turn: TurnContext) -> GraphContext:
+    def _context(self, turn: TurnContext, turn_token: str | None = None) -> GraphContext:
         return GraphContext(
             model=self._model,
             intent_model=self._intent_model,
@@ -265,7 +282,68 @@ class ChatService:
             registry=self._registry,
             provider=self._provider,
             engine=self._engine,
+            turn_token=turn_token,
         )
+
+    def _start_turn(self, conversation_id: int) -> _TurnRun:
+        token = uuid.uuid4().hex
+        return _TurnRun(
+            conversation_id=conversation_id,
+            token=token,
+            started=time.perf_counter(),
+            config=thread_config(conversation_id, turn_token=token),
+        )
+
+    async def _finish_turn(
+        self, run, state, *, status, error_type=None, streaming=True
+    ):
+        if run is None or run.finished:
+            return
+        run.finished = True
+        snapshot = {}
+        if self._metrics_handler is not None:
+            try:
+                snapshot = self._metrics_handler.finish_turn(run.token) or {}
+            except Exception:
+                logger.warning("读取回调指标失败", exc_info=True)
+        state = dict(state or {})
+        citations = state.get("citations") or []
+        payload = {
+            "conversation_id": run.conversation_id,
+            "turn_token": run.token,
+            "trace_id": snapshot.get("trace_id"),
+            "route": state.get("route"),
+            "intent": state.get("intent"),
+            "status": status,
+            "error_type": (error_type or "")[:64] or None,
+            "llm_calls": int(snapshot.get("llm_calls") or 0),
+            "prompt_tokens": int(snapshot.get("prompt_tokens") or 0),
+            "completion_tokens": int(snapshot.get("completion_tokens") or 0),
+            "total_tokens": int(snapshot.get("total_tokens") or 0),
+            "usage_estimated": bool(snapshot.get("usage_estimated")),
+            "model_usage": snapshot.get("model_usage") or None,
+            "stages": snapshot.get("stages") or None,
+            "cost_cny": float(snapshot.get("cost_cny") or 0),
+            "latency_ms": int((time.perf_counter() - run.started) * 1000),
+            "first_token_ms": snapshot.get("first_token_ms") if streaming else None,
+            "refusal_source": state.get("refusal_source"),
+            "citations_count": len(citations),
+        }
+        if self._turn_metrics_writer is not None:
+            await self._turn_metrics_writer.write(payload)
+
+    def _turn_scope(self, conversation_id: int, token: str):
+        observer = (
+            TurnObserver(self._metrics_handler, token)
+            if self._metrics_handler is not None
+            else None
+        )
+        trace = (
+            self._trace_scope(conversation_id)
+            if self._trace_scope is not None
+            else nullcontext()
+        )
+        return observer_scope(observer), trace
 
     async def shutdown(self) -> None:
         if self._summary_service is not None:
@@ -376,6 +454,7 @@ class ChatService:
             "route": None,
             "evidence": None,
             "citations": [],
+            "citations_by_message_id": {},
             "evidence_strong": None,
             "retrieval_error": None,
             "refusal_source": None,
@@ -525,18 +604,28 @@ class ChatService:
         if conversation_id is not None:
             lock = await _lock_for_conversation(conversation_id)
             await lock.acquire()
+        run = None
+        state = {}
+        status = "interrupted"
+        error_type = None
         try:
             if conversation_id is not None:
                 await self._reject_if_ticket_pending(conversation_id)
             prepared = await self._prepare(session_id, message)
             if prepared.created:
                 yield {"type": "session", "session_id": str(prepared.conversation_id)}
-            config = thread_config(prepared.conversation_id)
-            context = self._context(prepared.turn)
-            async for event in self._events(prepared.graph_input, config, context):
-                yield event
+            run = self._start_turn(prepared.conversation_id)
+            config = run.config
+            context = self._context(prepared.turn, run.token)
+            observer_cm, trace_cm = self._turn_scope(
+                prepared.conversation_id, run.token
+            )
+            with observer_cm, trace_cm:
+                async for event in self._events(prepared.graph_input, config, context):
+                    yield event
 
             snapshot = await self._graph.aget_state(config)
+            state = dict(snapshot.values or {}) if snapshot else {}
             payload = _interrupt_value(snapshot)
             if payload is not None:
                 actions = _interrupt_actions(payload)
@@ -548,10 +637,10 @@ class ChatService:
                 }, ensure_ascii=False))
                 if actions:
                     yield {"type": "actions", "items": actions}
+                status = "ok"
                 yield {"type": "done"}
                 return
 
-            state = dict(snapshot.values or {}) if snapshot else {}
             message_id = await self._persist_new(
                 prepared.conversation_id, state, prepared.history_count
             )
@@ -562,13 +651,26 @@ class ChatService:
             actions = state.get("suggested_actions") or []
             if actions:
                 yield {"type": "actions", "items": actions}
+            status = "ok"
             done = {"type": "done"}
             if message_id is not None:
                 done["message_id"] = message_id
             yield done
+        except GeneratorExit:
+            status = "cancelled"
+            raise
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
         except Exception as exc:
+            status = "error"
+            error_type = type(exc).__name__
             yield {"type": "error", "message": str(exc)}
         finally:
+            if run is not None:
+                await self._finish_turn(
+                    run, state, status=status, error_type=error_type, streaming=True
+                )
             if lock is not None:
                 lock.release()
 
@@ -578,22 +680,33 @@ class ChatService:
         if conversation_id is not None:
             lock = await _lock_for_conversation(conversation_id)
             await lock.acquire()
+        run = None
+        state = {}
+        status = "interrupted"
+        error_type = None
         try:
             if conversation_id is not None:
                 await self._reject_if_ticket_pending(conversation_id)
             prepared = await self._prepare(session_id, message)
-            config = thread_config(prepared.conversation_id)
-            state = await self._graph.ainvoke(
-                prepared.graph_input,
-                config=config,
-                context=self._context(prepared.turn),
+            run = self._start_turn(prepared.conversation_id)
+            config = run.config
+            context = self._context(prepared.turn, run.token)
+            observer_cm, trace_cm = self._turn_scope(
+                prepared.conversation_id, run.token
             )
+            with observer_cm, trace_cm:
+                state = await self._graph.ainvoke(
+                    prepared.graph_input,
+                    config=config,
+                    context=context,
+                )
             state = dict(state or {})
             payload = _interrupt_from_result(state)
             if payload is None:
                 snapshot = await self._graph.aget_state(config)
                 payload = _interrupt_value(snapshot)
             if payload is not None:
+                status = "ok"
                 return {
                     "session_id": prepared.conversation_id,
                     "interrupted": True,
@@ -609,8 +722,20 @@ class ChatService:
             )
             result["interrupted"] = False
             result["message_id"] = message_id
+            status = "ok"
             return result
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
+        except Exception as exc:
+            status = "error"
+            error_type = type(exc).__name__
+            raise
         finally:
+            if run is not None:
+                await self._finish_turn(
+                    run, state, status=status, error_type=error_type, streaming=False
+                )
             if lock is not None:
                 lock.release()
 
@@ -670,23 +795,38 @@ class ChatService:
         else:
             lock = await _lock_for_conversation(conversation_id)
             await lock.acquire()
+        # 校验阶段的 ValueError（会话/订单不存在）必须向调用方传播，与 validate_resume 的
+        # 拒绝口径一致；graph 执行阶段的异常才转成 error 事件。锁在这里由本分支兜底释放。
         try:
-            conversation_id, config, snapshot, history_count, turn = await self._resume_setup(
+            conversation_id, _, snapshot, history_count, turn = await self._resume_setup(
                 session_id, order_no
             )
-            context = self._context(turn)
-            async for event in self._events(
-                Command(resume={"order_no": order_no}), config, context
-            ):
-                yield event
+        except BaseException:
+            lock.release()
+            raise
+        run = None
+        state = {}
+        status = "interrupted"
+        error_type = None
+        try:
+            run = self._start_turn(conversation_id)
+            config = run.config
+            context = self._context(turn, run.token)
+            observer_cm, trace_cm = self._turn_scope(conversation_id, run.token)
+            with observer_cm, trace_cm:
+                async for event in self._events(
+                    Command(resume={"order_no": order_no}), config, context
+                ):
+                    yield event
             snapshot = await self._graph.aget_state(config)
+            state = dict(snapshot.values or {}) if snapshot else {}
             payload = _interrupt_value(snapshot)
             if payload is not None:
                 for action in _interrupt_actions(payload):
                     yield {"type": "actions", "items": [action]}
+                status = "ok"
                 yield {"type": "done"}
                 return
-            state = dict(snapshot.values or {}) if snapshot else {}
             message_id = await self._persist_new(conversation_id, state, history_count)
             await self._record_turn_snapshot(config, state, turn, message_id)
             citations = state.get("citations") or turn.citations
@@ -695,11 +835,26 @@ class ChatService:
             actions = state.get("suggested_actions") or []
             if actions:
                 yield {"type": "actions", "items": actions}
+            status = "ok"
             done = {"type": "done"}
             if message_id is not None:
                 done["message_id"] = message_id
             yield done
+        except GeneratorExit:
+            status = "cancelled"
+            raise
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
+        except Exception as exc:
+            status = "error"
+            error_type = type(exc).__name__
+            yield {"type": "error", "message": str(exc)}
         finally:
+            if run is not None:
+                await self._finish_turn(
+                    run, state, status=status, error_type=error_type, streaming=True
+                )
             lock.release()
 
     async def validate_resume(self, session_id: str, order_no: str) -> _ResumeLock:
@@ -721,21 +876,31 @@ class ChatService:
         conversation_id = self._coerce_session_id(session_id)
         lock = await _lock_for_conversation(conversation_id)
         await lock.acquire()
+        run = None
+        state = {}
+        status = "interrupted"
+        error_type = None
         try:
-            conversation_id, config, snapshot, history_count, turn = await self._resume_setup(
+            conversation_id, _, snapshot, history_count, turn = await self._resume_setup(
                 session_id, order_no
             )
-            state = await self._graph.ainvoke(
-                Command(resume={"order_no": order_no}),
-                config=config,
-                context=self._context(turn),
-            )
+            run = self._start_turn(conversation_id)
+            config = run.config
+            context = self._context(turn, run.token)
+            observer_cm, trace_cm = self._turn_scope(conversation_id, run.token)
+            with observer_cm, trace_cm:
+                state = await self._graph.ainvoke(
+                    Command(resume={"order_no": order_no}),
+                    config=config,
+                    context=context,
+                )
             state = dict(state or {})
             payload = _interrupt_from_result(state)
             if payload is None:
                 snapshot = await self._graph.aget_state(config)
                 payload = _interrupt_value(snapshot)
             if payload is not None:
+                status = "ok"
                 return {
                     "session_id": conversation_id,
                     "interrupted": True,
@@ -747,8 +912,20 @@ class ChatService:
             result = self._run_result(conversation_id, state, history_count)
             result["interrupted"] = False
             result["message_id"] = message_id
+            status = "ok"
             return result
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
+        except Exception as exc:
+            status = "error"
+            error_type = type(exc).__name__
+            raise
         finally:
+            if run is not None:
+                await self._finish_turn(
+                    run, state, status=status, error_type=error_type, streaming=False
+                )
             lock.release()
 
     async def _validate_ticket_confirmation(self, conversation_id: int, confirmation_id: str) -> None:
@@ -802,8 +979,13 @@ class ChatService:
         else:
             lock = await _lock_for_conversation(conversation_id)
             await lock.acquire()
+        run = None
+        state = {}
+        status = "interrupted"
+        error_type = None
         try:
-            config = thread_config(conversation_id)
+            run = self._start_turn(conversation_id)
+            config = run.config
             snapshot = await self._graph.aget_state(config)
             messages = list((snapshot.values or {}).get("messages") or [])
             turn = TurnContext(
@@ -812,20 +994,23 @@ class ChatService:
                 source_files=default_source_files(),
             )
             history_count = len(messages)
-            context = self._context(turn)
-            async for event in self._events(
-                Command(resume={"decision": decision, "confirmation_id": confirmation_id}),
-                config, context,
-            ):
-                yield event
+            context = self._context(turn, run.token)
+            observer_cm, trace_cm = self._turn_scope(conversation_id, run.token)
+            with observer_cm, trace_cm:
+                async for event in self._events(
+                    Command(resume={"decision": decision, "confirmation_id": confirmation_id}),
+                    config, context,
+                ):
+                    yield event
             snapshot = await self._graph.aget_state(config)
+            state = dict(snapshot.values or {}) if snapshot else {}
             payload = _interrupt_value(snapshot)
             if payload is not None:
                 for action in _interrupt_actions(payload):
                     yield {"type": "actions", "items": [action]}
+                status = "ok"
                 yield {"type": "done"}
                 return
-            state = dict(snapshot.values or {}) if snapshot else {}
             message_id = await self._persist_new(conversation_id, state, history_count)
             await self._record_turn_snapshot(config, state, turn, message_id)
             citations = state.get("citations") or turn.citations
@@ -834,11 +1019,26 @@ class ChatService:
             actions = state.get("suggested_actions") or []
             if actions:
                 yield {"type": "actions", "items": actions}
+            status = "ok"
             done = {"type": "done"}
             if message_id is not None:
                 done["message_id"] = message_id
             yield done
+        except GeneratorExit:
+            status = "cancelled"
+            raise
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
+        except Exception as exc:
+            status = "error"
+            error_type = type(exc).__name__
+            yield {"type": "error", "message": str(exc)}
         finally:
+            if run is not None:
+                await self._finish_turn(
+                    run, state, status=status, error_type=error_type, streaming=True
+                )
             lock.release()
 
     async def create_ticket_button(self, session_id: str, ticket_type: str, description: str) -> str:
@@ -895,7 +1095,8 @@ def _messages_of(update):
 
 
 def build_chat_service(
-    graph, *, settings=None, session_factory, registry=None, provider=None, engine=None
+    graph, *, settings=None, session_factory, registry=None, provider=None, engine=None,
+    metrics_handler=None, turn_metrics_writer=None, trace_scope=None,
 ):
     from app.core.llm import build_chat_model, build_structured_model
     from app.prompts.context import SummaryOutput
@@ -944,4 +1145,7 @@ def build_chat_service(
         registry=registry,
         provider=provider,
         engine=engine,
+        metrics_handler=metrics_handler,
+        turn_metrics_writer=turn_metrics_writer,
+        trace_scope=trace_scope,
     )

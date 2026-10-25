@@ -6,8 +6,16 @@ from pathlib import Path
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
-def thread_config(conversation_id: int) -> dict:
-    return {"configurable": {"thread_id": str(conversation_id)}}
+def thread_config(conversation_id: int, *, turn_token: str | None = None) -> dict:
+    config = {"configurable": {"thread_id": str(conversation_id)}}
+    if turn_token:
+        # 只有本轮显式带 token 时才加 metadata；无 token 的旧调用保持原形状，
+        # 既让 ch05 的精确断言继续成立，也避免历史快照查询多带无意义字段。
+        config["metadata"] = {
+            "conversation_id": conversation_id,
+            "turn_token": turn_token,
+        }
+    return config
 
 
 def normalize_stream_event(event) -> tuple[str, object]:
