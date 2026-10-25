@@ -29,64 +29,49 @@ async def test_query_faq_returns_evidence_text_and_collects_citations(monkeypatc
 
 
 async def test_query_faq_refusal_returns_refusal_text_and_writes_pool(monkeypatch):
-    written = []
+    calls = []
 
-    class FakeRepo:
-        def __init__(self, session):
+    class FakeFlywheel:
+        def __init__(self, session_factory):
             pass
 
-        async def add(self, conversation_id, raw_question, source, reason):
-            written.append((conversation_id, raw_question, source, reason))
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def commit(self):
-            pass
+        async def record_event_isolated(self, **kwargs):
+            calls.append(kwargs)
 
     monkeypatch.setattr(business, "run_pipeline", lambda q, **kw: _result(
         refused=True, refusal_source="retrieval_low_conf",
         refusal_reason="召回结果为空", evidence_text="", citations=[], items=[],
     ))
-    monkeypatch.setattr(business, "LowConfidenceRepository", FakeRepo)
+    monkeypatch.setattr(business, "FlywheelService", FakeFlywheel)
 
     turn = TurnContext(raw_question="今天天气怎么样", conversation_id=9)
-    tool = business.build_query_faq(session_factory=FakeSession, turn=turn)
+    tool = business.build_query_faq(session_factory=object, turn=turn)
     out = await tool.ainvoke({"keyword": "今天天气怎么样"})
     assert "「今天天气怎么样」" in out
     assert "暂时" in out
     assert "知识库" not in out
-    assert written == [(9, "今天天气怎么样", "retrieval_low_conf", "召回结果为空")]
+    assert calls == [{
+        "conversation_id": 9, "raw_question": "今天天气怎么样",
+        "source": "retrieval_low_conf", "reason": "召回结果为空", "citations": [],
+    }]
     assert turn.citations == []
 
 
 async def test_query_faq_pool_write_failure_does_not_break_the_answer(monkeypatch):
     """池子是后台资产，不该拖垮会话（Review Focus 6）。"""
-    class BoomRepo:
-        def __init__(self, session):
-            pass
 
-        async def add(self, *a, **kw):
+    class BoomFactory:
+        def __call__(self):
             raise RuntimeError("MySQL 挂了")
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
 
     monkeypatch.setattr(business, "run_pipeline", lambda q, **kw: _result(
         refused=True, refusal_source="self_check", refusal_reason="证据不足",
         evidence_text="", citations=[], items=[],
     ))
-    monkeypatch.setattr(business, "LowConfidenceRepository", BoomRepo)
 
-    tool = business.build_query_faq(session_factory=FakeSession, turn=TurnContext(raw_question="x"))
+    tool = business.build_query_faq(
+        session_factory=BoomFactory(), turn=TurnContext(raw_question="x")
+    )
     out = await tool.ainvoke({"keyword": "x"})
     assert "「x」" in out
 

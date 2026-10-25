@@ -10,7 +10,7 @@ from datetime import datetime
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import interrupt
 
-from app.db.repository import LowConfidenceRepository, OrderRepository
+from app.db.repository import OrderRepository
 from app.graph.routing import ROUTE_BY_INTENT
 from app.prompts.orchestrator import (
     AGENT_STOPPED_REPLY,
@@ -25,7 +25,8 @@ from app.prompts.orchestrator import (
     intent_messages,
 )
 from app.rag.pipeline import run_expanded_pipeline, run_pipeline
-from app.rag.refusal import SOURCE_RETRIEVAL, pool_record, refusal_text
+from app.rag.refusal import SOURCE_RETRIEVAL, refusal_text
+from app.services.flywheel_service import FlywheelService
 
 logger = logging.getLogger("knowweave.turn")
 
@@ -374,17 +375,14 @@ async def confidence_check(state, runtime):
 
 
 async def _record_low_confidence(
-    session_factory, conversation_id, question, source, reason
+    session_factory, conversation_id, question, source, reason, *, citations=None
 ):
     if session_factory is None:
         return
-    record = pool_record(question, source or SOURCE_RETRIEVAL, reason)
-    try:
-        async with session_factory() as session:
-            await LowConfidenceRepository(session).add(conversation_id, **record)
-            await session.commit()
-    except Exception:
-        logger.warning("低置信度问题落池失败（不影响本轮回答）", exc_info=True)
+    await FlywheelService(session_factory).record_event_isolated(
+        conversation_id=conversation_id, raw_question=question,
+        source=source or SOURCE_RETRIEVAL, reason=reason, citations=citations,
+    )
 
 
 async def fallback_reply(state, runtime):
@@ -411,6 +409,7 @@ async def fallback_reply(state, runtime):
             question,
             state.get("refusal_source"),
             state.get("refusal_reason"),
+            citations=state.get("citations"),
         )
 
     return {

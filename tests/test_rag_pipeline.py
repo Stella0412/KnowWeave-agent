@@ -191,7 +191,7 @@ def test_self_check_insufficient_refuses_and_blocks_evidence():
     assert result.refused is True
     assert result.refusal_source == "self_check"
     assert result.evidence_text == ""      # 拒答时不把证据塞进 prompt
-    assert result.citations == []
+    assert [c["chunk_id"] for c in result.citations] == [1, 2]   # 仍保留已召回片段
     assert "到账天数" in result.refusal_reason
 
 

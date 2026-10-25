@@ -62,10 +62,11 @@ class RagResult:
     rerank_score: float | None = None
 
 
-def _refused(raw_query: str, strategy: str, decision: RefusalDecision, **extra) -> RagResult:
+def _refused(raw_query: str, strategy: str, decision: RefusalDecision, citations=None, **extra) -> RagResult:
     return RagResult(
         refused=True, raw_query=raw_query, strategy=strategy,
-        refusal_source=decision.source, refusal_reason=decision.reason, **extra,
+        refusal_source=decision.source, refusal_reason=decision.reason,
+        citations=(citations if citations is not None else []), **extra,
     )
 
 
@@ -124,8 +125,12 @@ def run_pipeline(
     # 4. 检索侧早拒
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
     if decision.refused:
+        refusal_citations = (
+            to_citations(assemble(items[:rerank_n]), source_files)
+            if candidates and items else []
+        )
         return _refused(
-            query, chosen, decision,
+            query, chosen, decision, citations=refusal_citations,
             standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
             rerank_degraded=rerank_degraded, rerank_score=rerank_score,
         )
@@ -143,7 +148,7 @@ def run_pipeline(
         check = self_check_gate(sufficient, reason)
         if check.refused:
             return _refused(
-                query, chosen, check,
+                query, chosen, check, citations=citations,
                 standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
                 rerank_degraded=rerank_degraded, rerank_score=rerank_score,
             )
@@ -225,8 +230,12 @@ def run_expanded_pipeline(
 
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
     if decision.refused:
+        refusal_citations = (
+            to_citations(assemble(items[:rerank_n]), source_files)
+            if candidates and items else []
+        )
         return _refused(
-            resolution, chosen, decision,
+            resolution, chosen, decision, citations=refusal_citations,
             standard_query=resolution, rerank_degraded=rerank_degraded,
             rerank_score=rerank_score,
         )
@@ -239,7 +248,7 @@ def run_expanded_pipeline(
         check = self_check_gate(sufficient, reason)
         if check.refused:
             return _refused(
-                resolution, chosen, check,
+                resolution, chosen, check, citations=citations,
                 standard_query=resolution, rerank_degraded=rerank_degraded,
                 rerank_score=rerank_score,
             )

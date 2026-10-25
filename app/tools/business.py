@@ -13,9 +13,9 @@ import logging
 from langchain_core.tools import BaseTool, tool
 
 from app.core.retrieval import UNAVAILABLE
-from app.db.repository import LowConfidenceRepository
 from app.rag.pipeline import RagResult, TurnContext, default_source_files, run_pipeline
 from app.rag.refusal import pool_record, refusal_text
+from app.services.flywheel_service import FlywheelService
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,11 @@ def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseToo
             return UNAVAILABLE
 
         if result.refused:
-            await _record_low_confidence(session_factory, turn, result)
+            if turn is not None:
+                turn.citations.extend(result.citations)
+            await _record_low_confidence(
+                session_factory, turn, result, citations=result.citations
+            )
             raw_question = turn.raw_question if turn is not None else ""
             return refusal_text(raw_question or keyword)
 
@@ -78,22 +82,23 @@ def build_query_faq(session_factory, turn: TurnContext | None = None) -> BaseToo
     return query_faq
 
 
-async def _record_low_confidence(session_factory, turn: TurnContext | None, result: RagResult) -> None:
+async def _record_low_confidence(
+    session_factory, turn: TurnContext | None, result: RagResult, *, citations=None
+) -> None:
     """落低置信度问题池。**失败只记 warning，不影响本轮回答**（Review Focus 6）。
 
     池子写的是**用户原话**（`turn.raw_question`）：DDL 的语义就是原话，且改写本身可能把问题带偏，
-    拿改写后的问法落池会掩盖这一点。
+    拿改写后的问法落池会掩盖这一点。证据快照走 FlywheelService 的 record_event_isolated，
+    把拒答那一刻检索到的片段一并持久化。
     """
     if session_factory is None:
         return
     raw_question = turn.raw_question if turn is not None else result.raw_query
     conversation_id = turn.conversation_id if turn is not None else None
     record = pool_record(raw_question, result.refusal_source, result.refusal_reason)
-    try:
-        async with session_factory() as session:
-            await LowConfidenceRepository(session).add(conversation_id, **record)
-            await session.commit()
-    except Exception:
-        logger.warning("低置信度问题落池失败（不影响本轮回答）", exc_info=True)
+    await FlywheelService(session_factory).record_event_isolated(
+        conversation_id=conversation_id, raw_question=record["raw_question"],
+        source=record["source"], reason=record["reason"], citations=citations,
+    )
 
 
