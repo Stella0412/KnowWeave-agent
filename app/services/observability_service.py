@@ -248,7 +248,7 @@ class ObservabilityService:
         return {
             "items": [self._serialize_turn(r) for r in rows],
             "total": int(total),
-            "days": days,
+            "window_days": days,
             "limit": limit,
             "offset": offset,
         }
@@ -284,4 +284,4 @@ class ObservabilityService:
                 "avg_duration_ms": round(float(avg_ms), 1) if avg_ms is not None else None,
                 "retry_total": int(retry_total or 0),
             })
-        return {"items": items, "total": len(items), "days": days}
+        return {"items": items, "total": len(items), "window_days": days}

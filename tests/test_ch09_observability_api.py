@@ -76,6 +76,8 @@ async def test_summary_turns_tools(session_factory):
     assert summary.json()["latency_ms"]["p50"] in (1000, 3000)
     assert turns.json()["total"] == 1
     assert turns.json()["items"][0]["turn_token"] == "t1"
+    assert turns.json()["window_days"] == 7
+    assert tools.json()["window_days"] == 7
     assert tools.status_code == 200
     assert bad.status_code == 400
     assert bad_status.status_code == 400
