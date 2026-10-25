@@ -142,6 +142,18 @@ async def test_refund_agent_binds_full_fixed_tool_set(session_factory):
     ]
 
 
+def test_human_dynamic_block_routes_explicit_ticket_request():
+    text = build_dynamic_block(
+        route="business", intent="human",
+        summary="", evidence=None, order_data=None,
+        counter=TokenCounter(estimate_factor=1.0),
+        evidence_budget_tokens=1000, order_max_tokens=600,
+    )
+    assert "用户明确要求人工/建单" in text
+    assert "create_ticket" in text
+    assert "不要声称已转接" in text
+
+
 def test_refund_dynamic_block_contains_order_and_policy():
     text = build_dynamic_block(
         route="refund_flow", intent="refund_return",

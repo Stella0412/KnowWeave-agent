@@ -78,3 +78,13 @@
 {"query":"帮我翻译一段英文","intent":"other"}
 {"query":"推荐一部电影吧","intent":"other"}
 {"query":"我要退款还要投诉还要改地址","intent":"other"}
+{"query": "帮我建个工单", "intent": "human"}
+{"query": "给我建一个工单", "intent": "human"}
+{"query": "麻烦帮我提个工单", "intent": "human"}
+{"query": "请帮我创建一个工单", "intent": "human"}
+{"query": "我要建工单，反馈一下物流问题", "intent": "human"}
+{"query": "给我开个工单吧，订单 1001 一直没发货", "intent": "human"}
+{"query": "转人工", "intent": "human"}
+{"query": "我要找人工客服", "intent": "human"}
+{"query": "帮我转接客服专员", "intent": "human"}
+{"query": "找真人客服跟进一下", "intent": "human"}

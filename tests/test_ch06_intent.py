@@ -68,7 +68,7 @@ async def test_intent_rejects_unknown_label_and_bad_confidence():
         assert update["intent_source"] == "fallback"
 
 
-def test_intent_prompt_mentions_all_eight_labels():
+def test_intent_prompt_mentions_all_nine_labels():
     text = intent_messages("测试")[0].content
     for label in INTENTS:
         assert label in text

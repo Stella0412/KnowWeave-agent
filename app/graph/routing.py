@@ -2,7 +2,7 @@
 
 INTENTS = (
     "logistics", "order", "product_consult", "refund_return",
-    "after_sale", "complaint", "chitchat", "other",
+    "after_sale", "complaint", "human", "chitchat", "other",
 )
 
 ROUTE_BY_INTENT = {
@@ -12,6 +12,9 @@ ROUTE_BY_INTENT = {
     "refund_return": "refund_flow",
     "after_sale": "refund_flow",
     "complaint": "complaint",
+    # ch08：明确要求建单/转人工 → 主力 Agent 走 create_ticket 确认流，
+    # 不能落 other/clarify 的兜底话术。
+    "human": "business",
     "chitchat": "chitchat",
     "other": "clarify",
 }

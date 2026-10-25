@@ -5,7 +5,7 @@ from pathlib import Path
 from app.graph.routing import INTENTS
 
 
-def test_intent_samples_cover_eight_labels():
+def test_intent_samples_cover_nine_labels():
     rows = [
         json.loads(line)
         for line in Path("eval/samples_intent.jsonl").read_text(encoding="utf-8").splitlines()

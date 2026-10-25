@@ -25,10 +25,10 @@ def _runtime(intent_model):
     return SimpleNamespace(context=SimpleNamespace(intent_model=intent_model))
 
 
-def test_route_mapping_covers_all_eight_intents():
+def test_route_mapping_covers_all_nine_intents():
     assert set(INTENTS) == {
         "logistics", "order", "product_consult", "refund_return",
-        "after_sale", "complaint", "chitchat", "other",
+        "after_sale", "complaint", "human", "chitchat", "other",
     }
     assert ROUTE_BY_INTENT == {
         "logistics": "business",
@@ -37,6 +37,7 @@ def test_route_mapping_covers_all_eight_intents():
         "refund_return": "refund_flow",
         "after_sale": "refund_flow",
         "complaint": "complaint",
+        "human": "business",
         "chitchat": "chitchat",
         "other": "clarify",
     }

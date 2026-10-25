@@ -12,6 +12,7 @@ from app.prompts.orchestrator import (
     AGENT_SYSTEM_ADDENDUM_AFTER_SALE,
     AGENT_SYSTEM_ADDENDUM_BUSINESS,
     AGENT_SYSTEM_ADDENDUM_CLARIFY,
+    AGENT_SYSTEM_ADDENDUM_HUMAN,
     AGENT_SYSTEM_ADDENDUM_KNOWLEDGE,
     AGENT_SYSTEM_ADDENDUM_LOGISTICS,
     AGENT_SYSTEM_ADDENDUM_REFUND,
@@ -62,6 +63,8 @@ def _route_addendum(route: str, intent: str | None) -> str:
         )
     if intent == "logistics":
         return AGENT_SYSTEM_ADDENDUM_LOGISTICS
+    if intent == "human":
+        return AGENT_SYSTEM_ADDENDUM_HUMAN
     if route == "business":
         return AGENT_SYSTEM_ADDENDUM_BUSINESS
     return ""

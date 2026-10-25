@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 IntentName = Literal[
     "logistics", "order", "product_consult", "refund_return",
-    "after_sale", "complaint", "chitchat", "other",
+    "after_sale", "complaint", "human", "chitchat", "other",
 ]
 
 
@@ -20,13 +20,14 @@ class IntentOutput(BaseModel):
 
 INTENT_SYSTEM = """你是电商客服的意图分类器。只输出 intent 和 confidence 两个字段，不要解释。
 
-八类定义：
+九类定义：
 - logistics：查物流进度、快递到哪、派送、签收、承运商、物流单号。
 - order：查订单状态、金额、商品、下单/取消/修改订单、发货时间；不涉及退款退货政策。
 - product_consult：商品价格、库存、规格、材质、适用对象、优惠、保质期等售前咨询。
 - refund_return：退货、退款、换货、运费谁承担、退款到账、退货条件等退款退货政策。
 - after_sale：商品破损、少件、漏发、质量问题、保修、发票、赠品补发等事实售后；不含退款退货政策。
-- complaint：投诉、维权、态度差、欺骗、要说法、要求领导处理、明确要求转人工投诉。
+- complaint：投诉、维权、态度差、欺骗、要说法、要求领导处理；只表达不满、没有明确要求建单或转人工。
+- human：明确要求建工单、转人工、找客服专员/真人跟进（无论是否带具体问题，只要「要人工/要建单」诉求明确就归这里）。
 - chitchat：问候、感谢、闲聊、问你是谁、天气、笑话、告别。
 - other：超出电商客服范围、多意图冲突无法判断、没有明确业务动作、拿不准。
 
@@ -34,13 +35,16 @@ INTENT_SYSTEM = """你是电商客服的意图分类器。只输出 intent 和 c
 - 「拆封了还能退吗」→ refund_return（问政策）
 - 「收到的猫粮少了一袋」→ after_sale（陈述事实售后）
 - 「订单 1001 到哪了」→ logistics
-- 「我要投诉物流」→ complaint
+- 「我要投诉物流」→ complaint（只表达投诉，没要求建单/人工）
+- 「帮我建个工单，反馈订单 1001 发货太慢」→ human（明确要建单）
+- 「转人工」「找人工客服」→ human（明确要人工）
+- 「怎么建工单」→ other（询问流程，不是建单请求）
 - 「你们总部在哪」→ other
 - 「那个东西怎么回事」→ other（没有明确业务动作）
 - 「帮我写首诗」→ other
 
 confidence 口径：明确 0.9+；边界 0.6~0.8；拿不准 <0.6 并优先 other。
-禁止把超出范围或拿不准的问题硬塞进七类业务意图。"""
+禁止把超出范围或拿不准的问题硬塞进业务意图。"""
 
 
 def intent_messages(question: str, history=None, summary: str = "") -> list:
@@ -168,6 +172,12 @@ AGENT_SYSTEM_ADDENDUM_BUSINESS = """【本轮是业务数据类问题】
 - 查询物流前，如果只有订单号，先调用 query_order 拿到物流单号，再调用 logistics_query_logistics。
 - 仅当用户明确要求建单时调用 create_ticket；它只会生成一个前端按钮提议，不会立刻建单。
 - 普通咨询不要建议转人工。"""
+
+AGENT_SYSTEM_ADDENDUM_HUMAN = """【本轮用户明确要求人工/建单】
+- 用户明确要求创建工单时，调用 create_ticket；它只会生成前端确认卡片，不会立刻建单。
+- 用户只要求转人工、没有明确要求建单时，不要调用 create_ticket，也不要声称已转接成功；
+  说明可以为其创建工单转交人工，并请用户明确说「帮我建个工单」后再操作。
+- 用户明确要求建单但还没给出问题描述时，先请用户补充描述，不要编造。"""
 
 AGENT_SYSTEM_ADDENDUM_LOGISTICS = """【本轮是物流查询】
 - 用户问的是包裹什么时候送到，不是退款到账时间；不要答退款到账。
