@@ -1,6 +1,6 @@
 import pytest
 
-from eval.eval_ch09_merge import cosine, load_pairs, scan_thresholds
+from eval.eval_ch09_merge import cosine, load_pairs, recommend_threshold, scan_thresholds
 
 
 def test_cosine_identical_orthogonal_and_zero():
@@ -42,3 +42,27 @@ def test_load_pairs_rejects_bad_row(tmp_path):
     path.write_text("\n".join(lines), encoding="utf-8")
     with pytest.raises(ValueError):
         load_pairs(path)
+
+
+def test_recommend_threshold_picks_highest_recall_at_min_precision():
+    rows = [
+        {"threshold": 0.90, "precision": 0.80, "recall": 0.99, "f1": 0.88},
+        {"threshold": 0.93, "precision": 0.95, "recall": 0.70, "f1": 0.80},
+        {"threshold": 0.96, "precision": 0.98, "recall": 0.65, "f1": 0.78},
+    ]
+    best = recommend_threshold(rows)
+    assert best["threshold"] == 0.93
+    assert best["recall"] == 0.70
+
+
+def test_recommend_threshold_ties_break_to_higher_threshold():
+    rows = [
+        {"threshold": 0.94, "precision": 0.96, "recall": 0.80, "f1": 0.87},
+        {"threshold": 0.96, "precision": 0.97, "recall": 0.80, "f1": 0.88},
+    ]
+    assert recommend_threshold(rows)["threshold"] == 0.96
+
+
+def test_recommend_threshold_none_when_precision_too_low():
+    rows = [{"threshold": 0.90, "precision": 0.80, "recall": 0.99, "f1": 0.88}]
+    assert recommend_threshold(rows) is None

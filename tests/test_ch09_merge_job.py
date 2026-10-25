@@ -100,3 +100,9 @@ def test_cli_defaults_none_and_resolve_from_settings():
 
     args = parse_args(["--threshold", "0.95", "--limit", "10", "--batch-size", "5"])
     assert _resolve(args, s) == (0.95, 10, 5)
+
+
+async def test_cli_exit_code_one_when_flags_conflict():
+    from app.jobs.low_conf_merge import parse_args, run
+
+    assert await run(parse_args(["--skip-semantic", "--require-semantic"])) == 1

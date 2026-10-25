@@ -278,8 +278,8 @@ class FlywheelService:
     async def merge_semantic(self, *, threshold, limit, batch_size, dry_run=False):
         start = time.perf_counter()
         report = {"semantic_merged": 0, "clusters": 0, "skipped": 0,
-                  "skipped_cross_status": 0, "degraded": False,
-                  "_cluster_ids": set()}
+                  "skipped_cross_status": 0, "skipped_locked": 0,
+                  "degraded": False, "_cluster_ids": set()}
         async with self._session_factory() as session:
             rows = (await session.execute(
                 select(LowConfidenceQuestion)
@@ -344,6 +344,8 @@ class FlywheelService:
                     for group in status_groups:
                         if len(group) < 2:
                             continue
+                        # 固定加锁顺序：组内根按 id 升序（spec §6.1），避免两个归并事务互相死锁。
+                        group = sorted(group, key=lambda r: int(r.id))
                         canonical = _canonical(group)
                         losers = [r for r in group if r.id != canonical.id]
                         report["_cluster_ids"].add(canonical.id)
@@ -351,23 +353,43 @@ class FlywheelService:
                             report["semantic_merged"] += len(losers)
                             report["clusters"] += 1
                             continue
-                        canonical.duplicate_count += sum(
-                            int(l.duplicate_count or 0) for l in losers
-                        )
-                        canonical.last_seen_at = max(
-                            [canonical.last_seen_at] + [l.last_seen_at for l in losers]
-                        )
-                        for loser in losers:
-                            await repo.repoint_children(loser.id, canonical.id)
-                            loser.status = LowConfidenceStatus.MERGED
-                            loser.merged_into_id = canonical.id
-                            loser.duplicate_count = 1
-                            if (
-                                canonical.knowledge_chunk_id is None
-                                and loser.knowledge_chunk_id is not None
-                            ):
-                                canonical.knowledge_chunk_id = loser.knowledge_chunk_id
-                                canonical.resolution = loser.resolution
+                        merged = False
+                        for attempt in range(2):
+                            try:
+                                async with session.begin_nested():
+                                    canonical.duplicate_count += sum(
+                                        int(l.duplicate_count or 0) for l in losers
+                                    )
+                                    canonical.last_seen_at = max(
+                                        [canonical.last_seen_at] + [l.last_seen_at for l in losers]
+                                    )
+                                    for loser in losers:
+                                        await repo.repoint_children(loser.id, canonical.id)
+                                        loser.status = LowConfidenceStatus.MERGED
+                                        loser.merged_into_id = canonical.id
+                                        loser.duplicate_count = 1
+                                        if (
+                                            canonical.knowledge_chunk_id is None
+                                            and loser.knowledge_chunk_id is not None
+                                        ):
+                                            canonical.knowledge_chunk_id = loser.knowledge_chunk_id
+                                            canonical.resolution = loser.resolution
+                                merged = True
+                                break
+                            except (OperationalError, DBAPIError):
+                                logger.warning(
+                                    "语义归并组被锁（第 %s 次尝试）ids=%s",
+                                    attempt + 1, [r.id for r in group], exc_info=True,
+                                )
+                                if attempt == 0:
+                                    for row in group:
+                                        try:
+                                            await session.refresh(row)
+                                        except Exception:
+                                            pass
+                        if not merged:
+                            report["skipped_locked"] += 1
+                            continue
                         report["semantic_merged"] += len(losers)
                         report["clusters"] += 1
             if not dry_run:

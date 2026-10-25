@@ -40,6 +40,14 @@ def scan_thresholds(pairs, vectors, thresholds):
     return out
 
 
+def recommend_threshold(rows, min_precision=0.95):
+    """spec §6.2：precision ≥ min_precision 下召回最高的阈值；无合格阈值返回 None。"""
+    eligible = [row for row in rows if row["precision"] >= min_precision]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda item: (item["recall"], item["threshold"]))
+
+
 def main() -> None:
     import sys
 
@@ -59,8 +67,15 @@ def main() -> None:
             f"precision={row['precision']:.3f} "
             f"recall={row['recall']:.3f} f1={row['f1']:.3f}"
         )
-    best = max(rows, key=lambda item: item["f1"])
-    print(f"best={best['threshold']:.2f} f1={best['f1']:.3f}")
+    best = recommend_threshold(rows)
+    if best is not None:
+        print(
+            f"best={best['threshold']:.2f} "
+            f"precision={best['precision']:.3f} recall={best['recall']:.3f} "
+            f"f1={best['f1']:.3f}"
+        )
+    else:
+        print("best=None（无 precision≥0.95 的阈值）")
 
 
 if __name__ == "__main__":

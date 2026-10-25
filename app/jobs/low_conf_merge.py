@@ -29,9 +29,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="语义归并候选条数上限（默认取 Settings）")
     parser.add_argument("--batch-size", type=int, default=None,
                         help="embedding 批大小（默认取 Settings）")
-    semantic = parser.add_mutually_exclusive_group()
-    semantic.add_argument("--skip-semantic", action="store_true")
-    semantic.add_argument("--require-semantic", action="store_true")
+    parser.add_argument("--skip-semantic", action="store_true")
+    parser.add_argument("--require-semantic", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
@@ -49,52 +48,61 @@ def _public(report: dict) -> dict:
 
 
 async def run(args: argparse.Namespace) -> int:
+    if args.skip_semantic and args.require_semantic:
+        print("--skip-semantic 与 --require-semantic 互斥", file=sys.stderr)
+        return 1
     service = FlywheelService(SessionFactory)
-    threshold, limit, batch_size = _resolve(args, service._settings)
-    backfilled = 0
-    if not args.dry_run:
-        backfilled = await service.backfill_fingerprints()
-    exact = await service.merge_exact(dry_run=args.dry_run)
-    semantic = None
-    if not args.skip_semantic:
-        semantic = await service.merge_semantic(
-            threshold=threshold, limit=limit,
-            batch_size=batch_size, dry_run=args.dry_run,
-        )
-    cluster_ids = set(exact.get("_cluster_ids") or [])
-    if semantic:
-        cluster_ids |= set(semantic.get("_cluster_ids") or [])
-    report = {
-        "threshold": threshold,
-        "limit": limit,
-        "batch_size": batch_size,
-        "backfilled": backfilled,
-        "exact_merged": exact["exact_merged"],
-        "semantic_merged": semantic["semantic_merged"] if semantic else 0,
-        "merged": exact["exact_merged"] + (semantic["semantic_merged"] if semantic else 0),
-        "clusters": len(cluster_ids),
-        "skipped": exact["skipped"] + (semantic["skipped"] if semantic else 0),
-        "skipped_cross_status": exact["skipped_cross_status"] + (
-            semantic["skipped_cross_status"] if semantic else 0
-        ),
-        "skipped_locked": exact["skipped_locked"],
-        "degraded": bool(semantic and semantic["degraded"]),
-        "dry_run": args.dry_run,
-        "duration_ms": exact["duration_ms"] + (semantic["duration_ms"] if semantic else 0),
-        "exact": _public(exact),
-        "semantic": _public(semantic) if semantic else None,
-    }
-    if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-    else:
-        print(
-            f"阈值 {report['threshold']}；回填 {report['backfilled']} 行；"
-            f"精确归并 {report['exact_merged']} 行；语义归并 {report['semantic_merged']} 行；"
-            f"簇 {report['clusters']} 个；降级 {'是' if report['degraded'] else '否'}"
-        )
-    if args.require_semantic and report["degraded"]:
-        return 2
-    return 0
+    try:
+        threshold, limit, batch_size = _resolve(args, service._settings)
+        backfilled = 0
+        if not args.dry_run:
+            backfilled = await service.backfill_fingerprints()
+        exact = await service.merge_exact(dry_run=args.dry_run)
+        semantic = None
+        if not args.skip_semantic:
+            semantic = await service.merge_semantic(
+                threshold=threshold, limit=limit,
+                batch_size=batch_size, dry_run=args.dry_run,
+            )
+        cluster_ids = set(exact.get("_cluster_ids") or [])
+        if semantic:
+            cluster_ids |= set(semantic.get("_cluster_ids") or [])
+        report = {
+            "threshold": threshold,
+            "limit": limit,
+            "batch_size": batch_size,
+            "backfilled": backfilled,
+            "exact_merged": exact["exact_merged"],
+            "semantic_merged": semantic["semantic_merged"] if semantic else 0,
+            "merged": exact["exact_merged"] + (semantic["semantic_merged"] if semantic else 0),
+            "clusters": len(cluster_ids),
+            "skipped": exact["skipped"] + (semantic["skipped"] if semantic else 0),
+            "skipped_cross_status": exact["skipped_cross_status"] + (
+                semantic["skipped_cross_status"] if semantic else 0
+            ),
+            "skipped_locked": exact["skipped_locked"] + (
+                semantic["skipped_locked"] if semantic else 0
+            ),
+            "degraded": bool(semantic and semantic["degraded"]),
+            "dry_run": args.dry_run,
+            "duration_ms": exact["duration_ms"] + (semantic["duration_ms"] if semantic else 0),
+            "exact": _public(exact),
+            "semantic": _public(semantic) if semantic else None,
+        }
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(
+                f"阈值 {report['threshold']}；回填 {report['backfilled']} 行；"
+                f"精确归并 {report['exact_merged']} 行；语义归并 {report['semantic_merged']} 行；"
+                f"簇 {report['clusters']} 个；降级 {'是' if report['degraded'] else '否'}"
+            )
+        if args.require_semantic and report["degraded"]:
+            return 2
+        return 0
+    except Exception as exc:
+        print(f"归并作业致命错误：{exc}", file=sys.stderr)
+        return 1
 
 
 def main() -> None:
