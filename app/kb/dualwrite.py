@@ -57,19 +57,25 @@ async def write_chunks_pending(session_factory, chunks: list[Chunk]) -> list[int
     return ids
 
 
-async def vectorize_pending(session_factory, *, embed, milvus, batch_size: int = 200) -> int:
-    """阶段2：捞 pending → 拼文本 → embed → Milvus upsert（存 question/answer）→ 标 done。
+async def vectorize_pending(
+    session_factory, *, embed, milvus, batch_size: int = 200,
+    ids: list[int] | None = None,
+) -> int:
+    """pending → embed → Milvus → done；传 ids 时只处理这些行。
 
     embed: callable(list[str]) -> list[list[float]]（即 embed_texts）
     """
     total = 0
+    remaining = list(ids) if ids is not None else None
     while True:
         async with session_factory() as session:
-            rows = await KnowledgeRepository(session).list_pending(limit=batch_size)
+            rows = await KnowledgeRepository(session).list_pending(
+                limit=batch_size, ids=remaining
+            )
         if not rows:
             break
         texts = [vectorize_text(r.category, r.questions, r.answer) for r in rows]
-        vectors = embed(texts)
+        vectors = await asyncio.to_thread(embed, texts)
         await asyncio.to_thread(milvus.upsert, build_milvus_rows(rows, vectors))
         async with session_factory() as session:
             repo = KnowledgeRepository(session)
@@ -77,4 +83,9 @@ async def vectorize_pending(session_factory, *, embed, milvus, batch_size: int =
                 await repo.mark_vectorized(row.id, str(row.id))
             await session.commit()
         total += len(rows)
+        if remaining is not None:
+            done = {row.id for row in rows}
+            remaining = [chunk_id for chunk_id in remaining if chunk_id not in done]
+            if not remaining:
+                break
     return total
