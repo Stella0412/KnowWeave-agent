@@ -27,7 +27,7 @@ from app.graph.routing import (
 from app.graph.state import ConversationState, GraphContext
 
 
-def build_graph(*, checkpointer, max_agent_steps: int = 6):
+def build_graph(*, checkpointer, max_agent_steps: int = 6, callbacks=None):
     graph = StateGraph(ConversationState, context_schema=GraphContext)
 
     graph.add_node("prepare_context", prepare_context)
@@ -88,4 +88,7 @@ def build_graph(*, checkpointer, max_agent_steps: int = 6):
     graph.add_edge("chitchat_reply", "log")
     graph.add_edge("log", END)
 
-    return graph.compile(checkpointer=checkpointer)
+    compiled = graph.compile(checkpointer=checkpointer)
+    if callbacks:
+        compiled = compiled.with_config({"callbacks": list(callbacks)})
+    return compiled
