@@ -47,8 +47,9 @@ route/intent/状态/耗时/首 token/token/成本落到 `turn_metrics`，全图 
 ## 2. 前置与 MySQL 迁移顺序
 
 1. MySQL 迁移：**按顺序**手工执行 `sql/ch09-flywheel.sql`、`sql/ch09-observability.sql`（两份文件顶部已含
-   `SET NAMES utf8mb4;`）。`ALTER` 是一次性的，重复执行报错属预期。应用启动不自动执行 DDL；缺列时会在
-   池/指标读写处报错，先迁移再起服务。
+   `SET NAMES utf8mb4;`）。`ALTER` 是一次性的，重复执行报错属预期。应用启动时会跑
+   `Base.metadata.create_all`（app/main.py:69）补齐缺失的**表**，但**不会**补列/加列/`ALTER`——
+   缺列时仍会在池/指标读写处报错，需先手工执行上述 `sql/ch09-*.sql` 再起服务。
 2. 回填与归并：先 `make merge ARGS="--dry-run"` 检查回填/归并计划（打印将合并的根对、跨状态跳过项、
    次数变化，**不写库**）；确认后再 `make merge` 真正回填指纹并对历史行归并。合并不可自动回滚，正式运行前
    建议备份 `low_confidence_questions` 表。
@@ -127,7 +128,8 @@ Milvus Lite 是**单进程独占锁**：审核页补答时应用与 CLI 不能�
   首次启动 1–2 分钟。
 - **密钥配对**：compose 把 `.env` 的 `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` 同时注入为
   `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`/`LANGFUSE_INIT_PROJECT_SECRET_KEY`，保证 SDK 与自托管项目用同一套 key
-  （否则应用侧 401）。`init_langfuse_env` 只在缺失时生成、绝不覆盖已有值、绝不打印值。
+  （否则应用侧 401）。`init_langfuse_env` 补齐缺失的键，并把明显的占位值
+  （空值、`<…>` 包裹、`your-…` 前缀、`changeme`/`change-me`）替换为生成值；**绝不覆盖真实已有值**、绝不打印值。
 - **隐私仅本地**：Langfuse 为本地自托管，trace 含 prompt/回答正文；禁止把 `LANGFUSE_BASE_URL` 指向云端并灌入
   真实用户数据。`turn_metrics` 不含正文；审核页含用户原话/答案，仅本地开发使用，不暴露公网、无鉴权。
 
