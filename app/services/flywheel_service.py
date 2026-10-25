@@ -424,6 +424,9 @@ class FlywheelService:
             raise ReviewOrphan(
                 404, "cluster root not found", extra={"orphan_id": cluster_id}
             )
+        if for_update:
+            # 写操作只作用于主问题；从属行返回 409 并给出根 id（spec §7.3/§7.4）。
+            raise ReviewRejected(409, "从属行不能直接操作", extra={"root_id": root.id})
         return root
 
     async def list_queue(self, *, status="待处理", limit=50, offset=0):
@@ -452,6 +455,8 @@ class FlywheelService:
                     "citations_count": len(latest.citations) if latest is not None else 0,
                     "created_at": root.created_at.isoformat() if root.created_at else None,
                     "last_seen_at": root.last_seen_at.isoformat() if root.last_seen_at else None,
+                    "knowledge_chunk_id": root.knowledge_chunk_id,
+                    "resolution": root.resolution,
                 })
         return items, int(total)
 
@@ -491,11 +496,13 @@ class FlywheelService:
                 "evidence_state": evidence_state,
                 "occurrences": [{
                     "id": r.id,
-                    "conversation_id": r.conversation_id,
-                    "message_id": r.message_id,
+                    "raw_question": r.raw_question,
                     "source": r.source.value if hasattr(r.source, "value") else str(r.source),
                     "reason": r.reason,
+                    "conversation_id": r.conversation_id,
+                    "message_id": r.message_id,
                     "citations": list(r.citations) if r.citations else r.citations,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
                     "comment": comments.get(r.message_id),
                     "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
                 } for r in rows],
@@ -519,10 +526,10 @@ class FlywheelService:
             status_counts: dict[str, int] = {}
             source_counts: dict[str, int] = {}
             for root in roots:
-                status = self._status_value(root.status)
-                status_counts[status] = status_counts.get(status, 0) + 1
                 rows = [root, *(await repo.list_children(root.id))]
                 for row in rows:
+                    status = self._status_value(row.status)
+                    status_counts[status] = status_counts.get(status, 0) + 1
                     key = row.source.value if hasattr(row.source, "value") else str(row.source)
                     source_counts[key] = source_counts.get(key, 0) + 1
         return {
@@ -607,7 +614,11 @@ class FlywheelService:
                     embed=self._embed,
                     milvus=self._milvus_factory(),
                 )
-            return {"vectorized": count}
+                async with self._session_factory() as session:
+                    pending_remaining = await KnowledgeRepository(session).count_by_status(
+                        VectorizeStatus.PENDING
+                    )
+            return {"vectorized": count, "pending_remaining": pending_remaining}
         except Exception as exc:
             raise ReviewRejected(503, f"向量化失败：{exc}") from exc
 

@@ -6,7 +6,8 @@ from app.db.models import (
     KnowledgeChunk, LowConfidenceQuestion, LowConfidenceStatus, QAExtractionStaging,
     StagingStatus, VectorizeStatus,
 )
-from app.db.repository import LowConfidenceRepository
+from app.db.repository import KnowledgeRepository, LowConfidenceRepository
+from app.kb.chunking import Chunk
 from app.routers import review as review_router
 from app.services.flywheel_service import FlywheelService
 
@@ -63,15 +64,24 @@ async def test_queue_detail_metrics_and_comment(session_factory):
         detail = await client.get(f"/review/api/clusters/{root_id}")
         metrics = await client.get("/review/api/metrics")
     assert queue.json()["total"] == 1
+    assert queue.json()["status"] == "待处理"
+    assert queue.json()["limit"] == 50
+    assert queue.json()["offset"] == 0
     assert queue.json()["items"][0]["duplicate_count"] == 2
     assert queue.json()["items"][0]["sources"]["user_feedback"] == 1
+    assert queue.json()["items"][0]["knowledge_chunk_id"] is None
+    assert queue.json()["items"][0]["resolution"] is None
     body = detail.json()
     assert body["redirected_from"] is None
     assert body["variants"] == ["保价规则是什么", "价保怎么申请"]
     assert body["evidence_state"] == "has_snippets"
     assert len(body["occurrences"]) == 2
+    assert body["occurrences"][0]["raw_question"] == "保价规则是什么"
+    assert body["occurrences"][0]["created_at"] is not None
     assert metrics.json()["total_signals"] == 2   # 只累加根行的 duplicate_count
     assert metrics.json()["root_total"] == 1
+    assert metrics.json()["status_counts"] == {"待处理": 1, "已归并": 1}
+    assert metrics.json()["source_counts"] == {"user_feedback": 1, "retrieval_low_conf": 1}
 
 
 async def test_child_redirect_and_orphan_detail_and_mutation(session_factory):
@@ -81,7 +91,9 @@ async def test_child_redirect_and_orphan_detail_and_mutation(session_factory):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         ok = await client.get(f"/review/api/clusters/{child_id}")
-        await client.post(f"/review/api/clusters/{child_id}/ignore", json={"resolution": "x"})
+        mutate_child = await client.post(
+            f"/review/api/clusters/{child_id}/ignore", json={"resolution": "x"}
+        )
         async with session_factory() as session:
             orphan = await LowConfidenceRepository(session).add_question(
                 conversation_id=3, raw_question="孤儿", source="self_check",
@@ -97,6 +109,8 @@ async def test_child_redirect_and_orphan_detail_and_mutation(session_factory):
         )
     assert ok.json()["redirected_from"] == child_id
     assert ok.json()["id"] == root_id
+    assert mutate_child.status_code == 409
+    assert mutate_child.json()["root_id"] == root_id
     assert missing.status_code == 404
     assert missing.json()["orphan_id"] == orphan_id
     assert mutate.status_code == 409
@@ -201,3 +215,19 @@ async def test_vectorize_lock_conflict(session_factory):
     finally:
         service._vectorize_lock.release()
     assert resp.status_code == 409
+
+
+async def test_vectorize_returns_pending_remaining(session_factory):
+    async with session_factory() as session:
+        await KnowledgeRepository(session).insert_chunks([
+            Chunk(category="人工补充", questions="q", answer="a"),
+        ])
+        await session.commit()
+    service = FlywheelService(session_factory, embed=_embed, milvus_factory=FakeMilvus)
+    app = _app(service)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/review/api/vectorize")
+    assert resp.status_code == 200
+    assert resp.json()["vectorized"] == 1
+    assert resp.json()["pending_remaining"] == 0
