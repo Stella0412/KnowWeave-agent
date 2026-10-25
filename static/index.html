@@ -539,6 +539,8 @@
           </div>
         </div>
         <div class="header-actions">
+          <a class="btn-new" href="/review">飞轮审核</a>
+          <a class="btn-new" href="/observability">观测成本</a>
           <a class="btn-new" href="/rag-eval">评估面板</a>
           <button class="btn-new" id="btnNew">新对话</button>
         </div>
@@ -873,6 +875,7 @@
         appendError(bubbleEl, ev.message);
         break;
       case 'done':
+        ctx.messageId = ev.message_id || null;
         finalizeAssistant(bubbleEl, ctx);
         refreshAfterDone();
         break;
@@ -967,9 +970,9 @@
     sticky.style.visibility = 'visible';
   }
 
-  // 每条正常完成的助手回答下方挂 👍/👎；纯前端一次性状态，不发请求、不落库
-  function attachFeedback(msgEl) {
-    if (!msgEl || msgEl.querySelector('.feedback')) return;
+  // 每条正常完成的助手回答下方挂 👍/👎；只有带 message_id 的消息才可反馈，落库。
+  function attachFeedback(msgEl, messageId) {
+    if (!messageId || !msgEl || msgEl.querySelector('.feedback')) return;
     const box = document.createElement('div');
     box.className = 'feedback';
     const tip = document.createElement('span');
@@ -982,14 +985,35 @@
       button.dataset.kind = kind;
       button.setAttribute('aria-label', kind === 'up' ? '满意' : '不满意');
       button.textContent = label;
-      button.addEventListener('click', () => {
+      button.addEventListener('click', async () => {
         if (state.value) return; // 一次性锁定：同一条只能反馈一次
         state.value = kind;
         box.classList.add('locked');
         box.querySelectorAll('.fb-btn').forEach((b) => {
           b.classList.toggle('active', b.dataset.kind === kind);
         });
-        tip.textContent = '已反馈';
+        tip.textContent = '提交中…';
+        try {
+          const resp = await fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversation_id: Number(sessionId),
+              message_id: messageId,
+              rating: kind,
+              comment: null,
+            }),
+          });
+          if (resp.status === 200) {
+            tip.textContent = '已反馈';
+          } else if (resp.status === 409) {
+            tip.textContent = '该回答已评价，无法修改';
+          } else {
+            tip.textContent = '反馈提交失败';
+          }
+        } catch (e) {
+          tip.textContent = '反馈提交失败';
+        }
       });
       return button;
     };
@@ -1011,7 +1035,7 @@
     body.innerHTML = renderMarkdown(ctx.raw);
     linkifyCitations(body, ctx.citations);
     bubbleEl.appendChild(body);
-    attachFeedback(bubbleEl);
+    attachFeedback(bubbleEl, ctx.messageId);
     renderActions(bubbleEl, ctx.actions);
     scrollToBottom();
   }
@@ -1489,6 +1513,9 @@
     const text = inputEl.value.trim();
     if (!text || sending) return;
 
+    // 发新消息后，旧回答不再是「最新一条」，锁住它们的反馈按钮。
+    document.querySelectorAll('.feedback').forEach((box) => box.classList.add('locked'));
+
     addUserMessage(text);
     inputEl.value = '';
     autoGrow();
@@ -1544,8 +1571,10 @@
   btnSidebar.addEventListener('click', openSidebar);
   sidebarBackdropEl.addEventListener('click', closeSidebar);
 
+  const deepLink = new URLSearchParams(location.search).get('session');
   reset();
   loadConversations();
+  if (deepLink && /^\d+$/.test(deepLink)) openConversation(Number(deepLink));
 })();
 </script>
 </body>

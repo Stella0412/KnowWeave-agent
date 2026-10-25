@@ -187,6 +187,25 @@ class ChatRepository:
         )
         return (await self._session.execute(stmt)).scalar()
 
+    async def get_message(self, message_id: int) -> Message | None:
+        return await self._session.get(Message, message_id)
+
+    async def latest_user_before(self, conversation_id: int, message_id: int) -> Message | None:
+        return (
+            await self._session.execute(
+                select(Message)
+                .where(
+                    Message.conversation_id == conversation_id,
+                    Message.role == MessageRole.USER,
+                    Message.id < message_id,
+                    Message.content.is_not(None),
+                    func.trim(Message.content) != "",
+                )
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+
     async def list_conversations(self) -> list[Conversation]:
         result = await self._session.execute(select(Conversation).order_by(Conversation.id))
         return list(result.scalars())
