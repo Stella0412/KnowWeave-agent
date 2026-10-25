@@ -178,6 +178,15 @@ class ChatRepository:
         )
         return list(result.scalars())
 
+    async def latest_assistant_message_id(self, conversation_id: int) -> int | None:
+        stmt = select(func.max(Message.id)).where(
+            Message.conversation_id == conversation_id,
+            Message.role == MessageRole.ASSISTANT,
+            Message.content.is_not(None),
+            func.trim(Message.content) != "",
+        )
+        return (await self._session.execute(stmt)).scalar()
+
     async def list_conversations(self) -> list[Conversation]:
         result = await self._session.execute(select(Conversation).order_by(Conversation.id))
         return list(result.scalars())

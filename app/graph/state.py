@@ -32,6 +32,7 @@ class ConversationState(TypedDict, total=False):
 
     evidence: str | None
     citations: list[dict]
+    citations_by_message_id: dict[str, list[dict]]
     evidence_strong: bool | None
     retrieval_error: str | None
     refusal_source: str | None

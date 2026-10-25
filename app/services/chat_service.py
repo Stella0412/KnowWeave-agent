@@ -22,6 +22,7 @@ from app.config import settings as default_settings
 from app.db.repository import ChatRepository, OrderRepository
 from app.graph.runtime import normalize_stream_event, thread_config
 from app.graph.state import GraphContext
+from app.rag.evidence import cap_citations
 from app.rag.pipeline import TurnContext, default_source_files
 from app.services.context_manager import ContextManager
 from app.services.summary_service import SummaryService
@@ -414,8 +415,11 @@ class ChatService:
             history_count=history_count,
         )
 
-    async def _persist_new(self, conversation_id: int, state: dict, history_count: int) -> None:
+    async def _persist_new(
+        self, conversation_id: int, state: dict, history_count: int
+    ) -> int | None:
         new_messages = list(state.get("messages") or [])[history_count:]
+        last_message_id = None
         async with self._session_factory() as session:
             repo = ChatRepository(session)
             for message in new_messages:
@@ -426,11 +430,60 @@ class ChatService:
                 content = _text_of(message.content).strip()
                 if not content:
                     continue
-                await repo.add_message(
+                row = await repo.add_message(
                     conversation_id, role="assistant", content=content,
                 )
+                last_message_id = row.id
             await repo.touch_conversation(conversation_id)
             await session.commit()
+        return last_message_id
+
+    async def _record_turn_snapshot(self, config, state, turn, message_id):
+        if message_id is None:
+            return
+        citations = state.get("citations")
+        if citations is None:            # only when the state key is missing (old checkpoint/exception)
+            citations = turn.citations
+        snapshots = dict(state.get("citations_by_message_id") or {})
+        # 合并图里已持久化的快照：state 可能是本轮截断后的结果，不含历史快照；
+        # 历史快照以 checkpointer 为准，否则每轮会丢上一轮之前的快照。
+        try:
+            snapshot = await self._graph.aget_state(config)
+            existing = dict((snapshot.values or {}).get("citations_by_message_id") or {})
+            existing.update(snapshots)
+            snapshots = existing
+        except Exception:
+            pass
+        snapshots[str(message_id)] = (
+            None if citations is None else cap_citations(citations)
+        )
+        snapshots = dict(sorted(
+            snapshots.items(), key=lambda kv: int(kv[0])
+        )[-10:])
+        try:
+            await self._graph.aupdate_state(
+                config,
+                {"citations": citations, "citations_by_message_id": snapshots},
+                as_node="log",
+            )
+        except Exception:
+            logger.warning("citations 快照回写失败（不影响本轮回答）", exc_info=True)
+
+    async def latest_turn_snapshot(self, conversation_id):
+        async with self._session_factory() as session:
+            latest_id = await ChatRepository(session).latest_assistant_message_id(
+                conversation_id
+            )
+        if latest_id is None:
+            return None, None
+        try:
+            snapshot = await self._graph.aget_state(thread_config(conversation_id))
+            values = dict(snapshot.values or {}) if snapshot else {}
+            snapshots = values.get("citations_by_message_id") or {}
+            return latest_id, snapshots.get(str(latest_id))
+        except Exception:
+            logger.warning("读取 citations 快照失败，反馈留空", exc_info=True)
+            return latest_id, None
 
     async def _events(self, graph_input, config, context):
         async for raw_event in self._graph.astream(
@@ -499,14 +552,20 @@ class ChatService:
                 return
 
             state = dict(snapshot.values or {}) if snapshot else {}
-            await self._persist_new(prepared.conversation_id, state, prepared.history_count)
+            message_id = await self._persist_new(
+                prepared.conversation_id, state, prepared.history_count
+            )
+            await self._record_turn_snapshot(config, state, prepared.turn, message_id)
             citations = state.get("citations") or prepared.turn.citations
             if citations:
                 yield {"type": "citations", "items": citations}
             actions = state.get("suggested_actions") or []
             if actions:
                 yield {"type": "actions", "items": actions}
-            yield {"type": "done"}
+            done = {"type": "done"}
+            if message_id is not None:
+                done["message_id"] = message_id
+            yield done
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
         finally:
@@ -541,9 +600,15 @@ class ChatService:
                     "actions": _interrupt_actions(payload),
                     "trace": state.get("trace") or {},
                 }
-            await self._persist_new(prepared.conversation_id, state, prepared.history_count)
-            result = self._run_result(prepared.conversation_id, state, prepared.history_count)
+            message_id = await self._persist_new(
+                prepared.conversation_id, state, prepared.history_count
+            )
+            await self._record_turn_snapshot(config, state, prepared.turn, message_id)
+            result = self._run_result(
+                prepared.conversation_id, state, prepared.history_count
+            )
             result["interrupted"] = False
+            result["message_id"] = message_id
             return result
         finally:
             if lock is not None:
@@ -622,14 +687,18 @@ class ChatService:
                 yield {"type": "done"}
                 return
             state = dict(snapshot.values or {}) if snapshot else {}
-            await self._persist_new(conversation_id, state, history_count)
+            message_id = await self._persist_new(conversation_id, state, history_count)
+            await self._record_turn_snapshot(config, state, turn, message_id)
             citations = state.get("citations") or turn.citations
             if citations:
                 yield {"type": "citations", "items": citations}
             actions = state.get("suggested_actions") or []
             if actions:
                 yield {"type": "actions", "items": actions}
-            yield {"type": "done"}
+            done = {"type": "done"}
+            if message_id is not None:
+                done["message_id"] = message_id
+            yield done
         finally:
             lock.release()
 
@@ -673,9 +742,11 @@ class ChatService:
                     "actions": _interrupt_actions(payload),
                     "trace": state.get("trace") or {},
                 }
-            await self._persist_new(conversation_id, state, history_count)
+            message_id = await self._persist_new(conversation_id, state, history_count)
+            await self._record_turn_snapshot(config, state, turn, message_id)
             result = self._run_result(conversation_id, state, history_count)
             result["interrupted"] = False
+            result["message_id"] = message_id
             return result
         finally:
             lock.release()
@@ -755,14 +826,18 @@ class ChatService:
                 yield {"type": "done"}
                 return
             state = dict(snapshot.values or {}) if snapshot else {}
-            await self._persist_new(conversation_id, state, history_count)
+            message_id = await self._persist_new(conversation_id, state, history_count)
+            await self._record_turn_snapshot(config, state, turn, message_id)
             citations = state.get("citations") or turn.citations
             if citations:
                 yield {"type": "citations", "items": citations}
             actions = state.get("suggested_actions") or []
             if actions:
                 yield {"type": "actions", "items": actions}
-            yield {"type": "done"}
+            done = {"type": "done"}
+            if message_id is not None:
+                done["message_id"] = message_id
+            yield done
         finally:
             lock.release()
 
