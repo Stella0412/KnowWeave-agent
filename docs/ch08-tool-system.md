@@ -57,6 +57,10 @@ $env:MYSQL_PASSWORD="knowweave123"; $env:MYSQL_DB="knowweave"
 演示进程只启动/停止它自己创建的辅助进程（MCP 临时 Server），打印机器可读证据
 （PID、公开工具名、call_id、HTTP 状态、工单行/审计行、耗时），不新增任何公开注册端点。
 
+物流 mock 轨迹按运单号固定播种，状态严格单向推进（不会出现多条「已签收」）；App 在调用
+`logistics_query_logistics` 前会用订单的 `signed_at` 补齐同名参数，使签收节点与订单签收时间一致。
+无订单可查时才按当前日期生成。
+
 ## 3. 工单确认 / 取消 / 超时验收步骤
 
 1. 按第 1 节起三个服务（App 指向临时 MySQL）。

@@ -74,6 +74,63 @@ def _resolve_engine(context) -> ToolEngine:
     )
 
 
+_LOGISTICS_TOOL = "logistics_query_logistics"
+
+
+def _signed_at_from_state(state, tracking_no: str | None) -> str | None:
+    order = state.get("order_data") or {}
+    signed = order.get("signed_at")
+    if not signed:
+        return None
+    order_tracking = order.get("tracking_no")
+    if tracking_no and order_tracking and tracking_no != order_tracking:
+        return None
+    return signed
+
+
+async def _signed_at_from_db(context, tracking_no: str | None) -> str | None:
+    if not tracking_no:
+        return None
+    session_factory = getattr(context, "session_factory", None)
+    if session_factory is None:
+        return None
+    try:
+        from app.db.repository import OrderRepository
+
+        async with session_factory() as session:
+            order = await OrderRepository(session).get_by_tracking(tracking_no)
+    except Exception:
+        logger.warning("物流签收时间补参失败（不影响本轮工具调用）", exc_info=True)
+        return None
+    if order is None or order.signed_at is None:
+        return None
+    return order.signed_at.isoformat()
+
+
+async def _inject_logistics_signed_at(call, state, context, definitions):
+    """给物流查询补上订单签收时间，避免 mock 轨迹与订单签收日期互相矛盾。
+
+    只对已发现且 Schema 允许 signed_at 的物流工具生效；模型传入的日期不可信，
+    只要服务端能取到订单签收时间就覆盖。取不到时保持原参数，补参失败不阻断调用。
+    """
+    if call.get("name") != _LOGISTICS_TOOL:
+        return call
+    definition = definitions.get(_LOGISTICS_TOOL)
+    if definition is None:
+        return call
+    properties = (definition.parameters or {}).get("properties") or {}
+    if "signed_at" not in properties:
+        return call
+    args = dict(call.get("args") or {})
+    signed_at = _signed_at_from_state(state, args.get("tracking_no"))
+    if signed_at is None:
+        signed_at = await _signed_at_from_db(context, args.get("tracking_no"))
+    if signed_at is None:
+        return call
+    args["signed_at"] = signed_at
+    return {**call, "args": args}
+
+
 async def agent_llm(state, runtime):
     context = runtime.context
     route = state.get("route") or "business"
@@ -225,6 +282,7 @@ async def agent_tools(state, runtime):
         }
 
     call = pending[cursor]
+    call = await _inject_logistics_signed_at(call, state, context, definitions)
     name = call.get("name", "")
     actions = list(state.get("suggested_actions") or [])
     counter = getattr(context, "counter", None) or TokenCounter()

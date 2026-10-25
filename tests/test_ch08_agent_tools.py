@@ -444,6 +444,76 @@ async def test_submit_refund_route_guard_blocks_after_sale_and_business(session_
     assert len(invoked) == 1
 
 
+# 7. 物流查询自动带上订单签收时间：避免 mock 轨迹与订单签收日期互相矛盾
+
+async def test_logistics_call_injects_order_signed_at(session_factory, tmp_path):
+    from sqlalchemy import select
+
+    from app.db.models import Order
+    from app.db.seed import seed_orders
+    from app.tools.mcp_client import MCPToolProvider
+    from app.tools.policy import PolicyStore
+
+    await seed_orders(session_factory)
+    async with session_factory() as session:
+        order = (await session.execute(
+            select(Order).where(Order.order_no == "1001")
+        )).scalar_one()
+
+    policy_path = tmp_path / "permissions.json"
+    policy_path.write_text(json.dumps(
+        {"mcp": {"logistics": {"query_logistics": "read"}}}, ensure_ascii=False,
+    ), encoding="utf-8")
+    client = _FakeClient(["logistics"])
+    logistics_tool = _FakeTool(
+        "logistics_query_logistics",
+        parameters={
+            "type": "object",
+            "properties": {
+                "tracking_no": {"type": "string"},
+                "signed_at": {"type": "string"},
+            },
+            "required": ["tracking_no"],
+        },
+        result="ok",
+    )
+    client.set_tools("logistics", [logistics_tool])
+    provider = MCPToolProvider(
+        client, PolicyStore(policy_path), discovery_timeout=1.0,
+    )
+
+    captured = []
+
+    class CapturingEngine:
+        async def execute(self, call, context, definitions):
+            captured.append(call)
+            return ToolMessage(
+                content="ok", tool_call_id=call["id"], name=call["name"],
+            )
+
+    registry = ToolRegistry()
+    register_builtins(registry)
+    state = _state(
+        route="business",
+        intent="logistics",
+        pending_tool_calls=[{
+            "name": "logistics_query_logistics",
+            # 模型自带的日期不可信，必须以服务端订单数据为准覆盖。
+            "args": {"tracking_no": "SF1001CN", "signed_at": "2099-01-01"},
+            "id": "c1", "type": "tool_call",
+        }],
+        tool_cursor=0,
+    )
+    await agent_tools(
+        state,
+        _runtime(
+            registry=registry, provider=provider, engine=CapturingEngine(),
+            session_factory=session_factory,
+        ),
+    )
+    assert captured[0]["args"]["signed_at"] == order.signed_at.isoformat()
+
+
 # —— 图级测试夹具 ——
 
 

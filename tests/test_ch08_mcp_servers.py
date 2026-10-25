@@ -13,7 +13,7 @@ import random
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp_servers.after_sales import make_return_progress, make_warranty
@@ -97,6 +97,55 @@ def test_make_tracking_events_time_ordered():
         times = [datetime.fromisoformat(e["time"]) for e in result["events"]]
         assert times == sorted(times)
         assert all(times[i] < times[i + 1] for i in range(len(times) - 1))
+
+
+# 3b. 轨迹自洽：状态严格向前推进，签收后不再追加
+
+def test_make_tracking_statuses_progress_strictly():
+    flow = ["pending_pickup", "in_transit", "delivered"]
+    for seed in range(40):
+        result = make_tracking("T", rng=random.Random(seed))
+        codes = [event["status_code"] for event in result["events"]]
+        indexes = [flow.index(code) for code in codes]
+        assert indexes == list(range(indexes[0], indexes[-1] + 1)), codes
+        assert codes.count("delivered") <= 1, codes
+        assert codes[-1] == result["status_code"]
+
+
+# 3c. 同一运单号不注入 rng 也必须稳定（生产调用走这条路径）
+
+def test_make_tracking_is_deterministic_without_injected_rng():
+    first = make_tracking("SF1001CN")
+    for _ in range(5):
+        assert make_tracking("SF1001CN") == first
+
+
+# 3d. 时间轴相对当前日期，演示订单与 seed 的 signed_days_ago 对齐
+
+def test_make_tracking_delivered_relative_to_now_for_demo_order():
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    result = make_tracking("SF1001CN", now=now)
+    last = datetime.fromisoformat(result["events"][-1]["time"])
+    assert result["status_code"] == "delivered"
+    assert last.date() == (now - timedelta(days=3)).date()
+
+
+def test_make_tracking_known_in_transit_order_stays_in_transit():
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    result = make_tracking("SF1003CN", now=now)
+    assert result["status_code"] == "in_transit"
+    assert all(event["status_code"] != "delivered" for event in result["events"])
+
+
+# 3e. 传入订单签收时间时，签收节点必须与订单时间一致
+
+def test_make_tracking_aligns_delivered_time_to_order_signed_at():
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    result = make_tracking(
+        "SF1001CN", now=now, signed_at="2026-10-18T23:10:51",
+    )
+    assert result["status_code"] == "delivered"
+    assert result["events"][-1]["time"].startswith("2026-10-18")
 
 
 # 4. 导入模块不启动 Server、不 import app.main/app.db/SQLAlchemy、不需要数据库

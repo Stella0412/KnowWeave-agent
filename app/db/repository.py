@@ -514,6 +514,16 @@ class OrderRepository:
         )
         return result.scalars().first()
 
+    async def get_by_tracking(self, tracking_no: str) -> Order | None:
+        """按物流单号取单；物流工具用它的签收时间对齐 mock 轨迹。"""
+        key = (tracking_no or "").strip()
+        if not key:
+            return None
+        result = await self._session.execute(
+            select(Order).where(Order.tracking_no == key)
+        )
+        return result.scalars().first()
+
 
 class RefundRepository:
     def __init__(self, session: AsyncSession):
