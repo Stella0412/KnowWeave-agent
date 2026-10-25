@@ -7,9 +7,14 @@
    必须是 [1]，否则模型「引用第 1 条」和它实际先读到的东西不一致。
 """
 
+import json
 from dataclasses import dataclass
 
 _CONTENT_PREVIEW_MAX = 4000
+
+_CITATION_ANSWER_MAX = 2000
+_CITATION_MAX_ITEMS = 20
+_CITATION_MAX_BYTES = 65536
 
 
 @dataclass
@@ -107,3 +112,23 @@ def to_citations(items: list[Evidence], source_files: dict[str, str] | None = No
         }
         for item in items
     ]
+
+
+def cap_citations(items: list[dict] | None, *, max_items: int = _CITATION_MAX_ITEMS,
+                  answer_max: int = _CITATION_ANSWER_MAX,
+                  max_bytes: int = _CITATION_MAX_BYTES) -> list[dict]:
+    """截断证据快照：最多 20 条、单条 answer 2000 字符、JSON 序列化后 64KB。"""
+    capped: list[dict] = []
+    for item in items or []:
+        if len(capped) >= max_items:
+            break
+        copy = dict(item)
+        answer = copy.get("answer")
+        if isinstance(answer, str) and len(answer) > answer_max:
+            copy["answer"] = answer[:answer_max]
+        capped.append(copy)
+    while capped and len(
+        json.dumps(capped, ensure_ascii=False).encode("utf-8")
+    ) > max_bytes:
+        capped.pop()
+    return capped
