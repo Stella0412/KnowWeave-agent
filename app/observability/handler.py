@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 class TurnMetricsHandler:
-    def __init__(self, *, prices, counter):
+    def __init__(self, *, prices, counter, trace_id_provider=None):
         self._prices = prices
         self._counter = counter
+        self._trace_id_provider = trace_id_provider
         self._lock = threading.Lock()
         self._turns: dict[str, dict] = {}
         self._runs: dict[str, dict] = {}
@@ -54,16 +55,15 @@ class TurnMetricsHandler:
             "priced": True,
         })
 
-    @staticmethod
-    def _trace_id(metadata):
+    def _trace_id(self, metadata):
         for key in ("langfuse_trace_id", "trace_id"):
             value = (metadata or {}).get(key)
             if value:
                 return str(value)
+        if self._trace_id_provider is None:
+            return None
         try:
-            from langfuse import get_client
-
-            value = get_client().get_current_trace_id()
+            value = self._trace_id_provider()
             return str(value) if value else None
         except Exception:
             return None
@@ -184,6 +184,18 @@ class TurnMetricsHandler:
                 prompt = usage.get("input_tokens")
                 completion = usage.get("output_tokens")
                 total = usage.get("total_tokens")
+                try:
+                    token_usage = (
+                        getattr(response, "llm_output", None) or {}
+                    ).get("token_usage") or {}
+                except Exception:
+                    token_usage = {}
+                if prompt is None:
+                    prompt = token_usage.get("prompt_tokens")
+                if completion is None:
+                    completion = token_usage.get("completion_tokens")
+                if total is None:
+                    total = token_usage.get("total_tokens")
                 estimated = prompt is None or completion is None
                 if prompt is None:
                     prompt = info["prompt_tokens"]
@@ -242,11 +254,14 @@ class TurnMetricsHandler:
                     "items": 0,
                     "tokens": 0,
                     "estimated": True,
+                    "model": None,
                 })
                 stage["calls"] += 1
                 stage["duration_ms"] += int(duration_ms)
                 stage["items"] += int(items)
                 stage["tokens"] += tokens
+                if stage["model"] is None:
+                    stage["model"] = str(model)
                 entry = self._model_entry(acc, str(model))
                 entry["calls"] += 1
                 entry["prompt_tokens"] += tokens

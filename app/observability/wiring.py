@@ -25,11 +25,9 @@ def build_observability(settings, counter=None):
         cjk_tokens_per_char=settings.cjk_tokens_per_char,
         estimate_factor=settings.token_estimate_factor,
     )
-    handler = TurnMetricsHandler(
-        prices=load_prices(settings.model_prices_path), counter=counter,
-    )
-    callbacks = [handler]
     client = None
+    trace_id_provider = None
+    langfuse_callback = None
     if (
         settings.langfuse_tracing_enabled
         and settings.langfuse_public_key
@@ -43,16 +41,26 @@ def build_observability(settings, counter=None):
         os.environ.setdefault("LANGFUSE_HOST", host)
         os.environ.setdefault("LANGFUSE_BASE_URL", host)
         try:
-            from langfuse import Langfuse
+            from langfuse import Langfuse, get_client
             from langfuse.langchain import CallbackHandler
 
             client = Langfuse(
                 public_key=public_key, secret_key=secret_key, host=host,
             )
-            callbacks.insert(0, CallbackHandler())
+            langfuse_callback = CallbackHandler()
+            trace_id_provider = lambda: get_client().get_current_trace_id()
         except Exception:
             logger.warning("Langfuse 初始化失败，降级为本地指标", exc_info=True)
             client = None
+            trace_id_provider = None
+
+    handler = TurnMetricsHandler(
+        prices=load_prices(settings.model_prices_path), counter=counter,
+        trace_id_provider=trace_id_provider,
+    )
+    callbacks = [handler]
+    if langfuse_callback is not None:
+        callbacks.insert(0, langfuse_callback)
 
     @contextmanager
     def trace_scope(conversation_id):

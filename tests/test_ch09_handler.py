@@ -84,3 +84,69 @@ def test_first_token_and_unknown_price():
     assert snap["first_token_ms"] is not None
     assert snap["unpriced_models"] == ["x"]
     assert snap["cost_cny"] == 0
+
+
+def test_no_langfuse_probe_when_disabled(monkeypatch):
+    import langfuse
+
+    def boom():
+        raise AssertionError("langfuse.get_client must not be called when disabled")
+
+    monkeypatch.setattr(langfuse, "get_client", boom)
+    handler = _handler()  # no trace_id_provider -> never touches langfuse
+    handler.on_chain_start({}, {}, run_id="chain", metadata={"turn_token": "t"})
+    handler.on_chat_model_start(
+        {"name": "m", "kwargs": {"model": "m"}}, [[AIMessage(content="问")]],
+        run_id="llm", parent_run_id="chain", metadata={"turn_token": "t"},
+    )
+    handler.on_llm_end(
+        LLMResult(generations=[[ChatGeneration(message=AIMessage(content="答"))]]),
+        run_id="llm",
+    )
+    assert handler.finish_turn("t")["trace_id"] is None
+
+
+def test_trace_id_provider_used_when_set():
+    handler = TurnMetricsHandler(
+        prices=PriceBook({"m": ModelPrice(1.0, 2.0)}),
+        counter=TokenCounter(estimate_factor=1.0),
+        trace_id_provider=lambda: "trace-123",
+    )
+    handler.on_chain_start({}, {}, run_id="chain", metadata={"turn_token": "t"})
+    assert handler.finish_turn("t")["trace_id"] == "trace-123"
+
+
+def test_record_stage_shape_and_first_model():
+    handler = _handler()
+    handler.record_stage("t", "embedding", model="e1", duration_ms=12, texts=["问"], items=1)
+    handler.record_stage("t", "embedding", model="e2", duration_ms=8, texts=["问2"], items=2)
+    snap = handler.finish_turn("t")
+    stage = snap["stages"]["embedding"]
+    assert stage["model"] == "e1"
+    assert stage["calls"] == 2
+    assert stage["duration_ms"] == 20
+    assert stage["items"] == 3
+    assert stage["tokens"] > 0
+
+
+def test_llm_output_token_usage_fallback():
+    handler = _handler()
+    handler.on_chain_start({}, {}, run_id="chain", metadata={"turn_token": "t"})
+    handler.on_chat_model_start(
+        {"name": "m", "kwargs": {"model": "m"}}, [[AIMessage(content="问")]],
+        run_id="llm", parent_run_id="chain", metadata={"turn_token": "t"},
+    )
+    handler.on_llm_end(
+        LLMResult(
+            generations=[[ChatGeneration(message=AIMessage(content="答"))]],
+            llm_output={"token_usage": {
+                "prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10,
+            }},
+        ),
+        run_id="llm",
+    )
+    snap = handler.finish_turn("t")
+    assert snap["prompt_tokens"] == 7
+    assert snap["completion_tokens"] == 3
+    assert snap["total_tokens"] == 10
+    assert snap["usage_estimated"] is False
