@@ -24,6 +24,9 @@
     tr:last-child td { border-bottom: none; }
     a { color: #2f66e0; }
     footer { text-align: center; color: #98a2b3; font-size: 12px; padding: 16px 0 32px; }
+    .error-banner { background: #fdecea; color: #b42318; border: 1px solid #f5c2c0; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+    footer ul.notes { list-style: none; padding: 0; margin: 8px auto 0; max-width: 900px; text-align: left; }
+    footer ul.notes li { margin: 2px 0; }
   </style>
 </head>
 <body>
@@ -36,6 +39,7 @@
     </nav>
   </header>
   <main>
+    <div id="error-banner" class="error-banner" hidden></div>
     <section>
       <h2>概览</h2>
       <div class="cards" id="cards"></div>
@@ -77,7 +81,15 @@
       </table>
     </section>
   </main>
-  <footer id="footnote">观测面板 · 数据来自本地 turn_metrics / 工具审计 · 仅统计所选窗口</footer>
+  <footer>
+    <p id="footnote">观测面板 · 数据来自本地 turn_metrics / 工具审计 · 仅统计所选窗口</p>
+    <ul class="notes">
+      <li>token 为估算值：模型未返回 usage_metadata 时按估算计数（usage_estimated）。</li>
+      <li>模型单价来自 config/model_prices.json；未收录的模型按 0 计费。</li>
+      <li>interrupted 不计入错误率；错误率 = (error + cancelled) / turns。</li>
+      <li>turns 按最近 5000 轮近似。</li>
+    </ul>
+  </footer>
   <script>
     const state = { days: 7 };
 
@@ -192,18 +204,32 @@
       }
     }
 
+    async function getJSON(url) {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return resp.json();
+    }
+
     async function load() {
       const days = state.days;
-      const summary = await fetch("/observability/api/summary?days=" + days).then(function (r) { return r.json(); });
-      const turns = await fetch("/observability/api/turns?days=" + days + "&limit=200").then(function (r) { return r.json(); });
-      const tools = await fetch("/observability/api/tools?days=" + days).then(function (r) { return r.json(); });
-      renderSummary(summary);
-      renderModels(summary.models || []);
-      renderStages(summary.stages || {});
-      renderTurns(turns.items || []);
-      renderTools(tools.items || []);
-      document.getElementById("footnote").textContent =
-        "观测面板 · 数据来自本地 turn_metrics / 工具审计 · 最近 " + days + " 天";
+      const banner = document.getElementById("error-banner");
+      banner.hidden = true;
+      banner.textContent = "";
+      try {
+        const summary = await getJSON("/observability/api/summary?days=" + days);
+        const turns = await getJSON("/observability/api/turns?days=" + days + "&limit=200");
+        const tools = await getJSON("/observability/api/tools?days=" + days);
+        renderSummary(summary);
+        renderModels(summary.models || []);
+        renderStages(summary.stages || {});
+        renderTurns(turns.items || []);
+        renderTools(tools.items || []);
+        document.getElementById("footnote").textContent =
+          "观测面板 · 数据来自本地 turn_metrics / 工具审计 · 最近 " + days + " 天";
+      } catch (err) {
+        banner.textContent = "加载观测数据失败：" + (err && err.message ? err.message : String(err));
+        banner.hidden = false;
+      }
     }
 
     document.getElementById("days").addEventListener("click", function (ev) {

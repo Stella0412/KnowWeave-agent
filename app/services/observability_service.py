@@ -134,7 +134,7 @@ class ObservabilityService:
         stages: dict[str, dict] = {}
         unpriced: set[str] = set()
         estimated_turns = 0
-        errors = 0
+        failures = 0  # §10.2：错误率 = (error + cancelled) / turns；interrupted 不计入
         refusals = 0
         prompt_total = completion_total = total_total = 0
         cost_total = 0.0
@@ -144,8 +144,8 @@ class ObservabilityService:
         for row in rows:
             status = self._status_value(row.status)
             status_counts[status] = status_counts.get(status, 0) + 1
-            if status == "error":
-                errors += 1
+            if status in ("error", "cancelled"):
+                failures += 1
             if row.refusal_source:
                 refusal_sources[row.refusal_source] = (
                     refusal_sources.get(row.refusal_source, 0) + 1
@@ -165,7 +165,7 @@ class ObservabilityService:
             self._merge_stages(stages, row.stages)
 
         return {
-            "days": days,
+            "window_days": days,
             "turns": turns,
             "satisfaction": {
                 "up": up,
@@ -173,7 +173,7 @@ class ObservabilityService:
                 "rate": round(up / (up + down), 4) if (up + down) else None,
             },
             "refusal_rate": round(refusals / turns, 4) if turns else None,
-            "error_rate": round(errors / turns, 4) if turns else None,
+            "error_rate": round(failures / turns, 4) if turns else None,
             "status_counts": status_counts,
             "refusal_sources": refusal_sources,
             "tokens": {

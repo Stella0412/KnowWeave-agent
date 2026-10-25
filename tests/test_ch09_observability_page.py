@@ -12,6 +12,11 @@ def test_observability_page_is_safe_and_relative():
         "trace_url",
         "avg_tokens",
         "avg_duration_ms",
+        "usage_estimated",
+        "model_prices.json",
+        "不计入错误率",
+        "5000",
+        "error-banner",
     ]:
         assert token in html
     assert "innerHTML" not in html

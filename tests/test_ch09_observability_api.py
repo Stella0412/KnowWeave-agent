@@ -40,6 +40,14 @@ async def _seed(session_factory):
                 cost_cny=0, latency_ms=3000, first_token_ms=None,
                 refusal_source="self_check", citations_count=0, created_at=now,
             ),
+            TurnMetrics(
+                conversation_id=3, turn_token="t3", trace_id=None,
+                route="business", intent="faq", status="cancelled", llm_calls=0,
+                prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                usage_estimated=False, model_usage=None, stages=None,
+                cost_cny=0, latency_ms=1000, first_token_ms=None,
+                refusal_source=None, citations_count=0, created_at=now,
+            ),
         ])
         session.add_all([
             AnswerFeedback(conversation_id=1, message_id=10, rating="up"),
@@ -61,9 +69,10 @@ async def test_summary_turns_tools(session_factory):
         tools = await client.get("/observability/api/tools?days=7")
         bad = await client.get("/observability/api/summary?days=2")
         bad_status = await client.get("/observability/api/turns?status=nope")
-    assert summary.json()["turns"] == 2
+    assert summary.json()["turns"] == 3
     assert summary.json()["satisfaction"]["rate"] == 0.5
-    assert summary.json()["error_rate"] == 0.5
+    # §10.2：错误率 = (error + cancelled) / turns = 2/3（interrupted 不计入）
+    assert summary.json()["error_rate"] == round(2 / 3, 4)
     assert summary.json()["latency_ms"]["p50"] in (1000, 3000)
     assert turns.json()["total"] == 1
     assert turns.json()["items"][0]["turn_token"] == "t1"
@@ -76,4 +85,5 @@ async def test_observability_works_without_langfuse(session_factory):
     # 本测试只验证本地聚合不访问 Langfuse；服务无 client 依赖。
     await _seed(session_factory)
     summary = await ObservabilityService(session_factory).summary(7)
-    assert summary["turns"] == 2
+    assert summary["turns"] == 3
+    assert summary["window_days"] == 7
