@@ -11,10 +11,12 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -241,6 +243,25 @@ class LowConfidenceSource(str, enum.Enum):
     USER_FEEDBACK = "user_feedback"
 
 
+class AnswerRating(str, enum.Enum):
+    UP = "up"
+    DOWN = "down"
+
+
+class LowConfidenceStatus(str, enum.Enum):
+    PENDING = "待处理"
+    MERGED = "已归并"
+    CLOSED = "已关闭"
+    IGNORED = "已忽略"
+
+
+class TurnStatus(str, enum.Enum):
+    OK = "ok"
+    ERROR = "error"
+    INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+
+
 class FaithCaseStatus(str, enum.Enum):
     OPEN = "未解决"
     RESOLVED = "已解决"
@@ -251,17 +272,97 @@ class LowConfidenceQuestion(Base):
     """低置信度问题池：答不出来的原话落这里，是 ch09 数据飞轮的入口。"""
 
     __tablename__ = "low_confidence_questions"
+    __table_args__ = (
+        UniqueConstraint("message_id", "source", name="uk_message_source"),
+        Index("idx_fingerprint_root", "fingerprint", "merged_into_id"),
+        Index("idx_status_last_seen", "status", "last_seen_at"),
+        Index("idx_merged_into", "merged_into_id"),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int | None] = mapped_column(
         BIGINT, ForeignKey("conversations.id"), nullable=True, index=True
     )
+    message_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
     raw_question: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    merged_into_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    status: Mapped[LowConfidenceStatus] = mapped_column(
+        Enum(LowConfidenceStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False, default=LowConfidenceStatus.PENDING,
+        server_default=LowConfidenceStatus.PENDING.value,
+    )
     source: Mapped[LowConfidenceSource] = mapped_column(
         Enum(LowConfidenceSource, values_callable=lambda e: [m.value for m in e]), index=True
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    knowledge_chunk_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AnswerFeedback(Base):
+    """👍/👎 反馈落库：一条助手消息只有一个最终评价，与飞轮/审计表解耦。"""
+
+    __tablename__ = "answer_feedback"
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uk_feedback_message"),
+        Index("idx_feedback_conversation", "conversation_id"),
+        Index("idx_feedback_rating_created", "rating", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    message_id: Mapped[int] = mapped_column(BIGINT, nullable=False, unique=True)
+    rating: Mapped[AnswerRating] = mapped_column(
+        Enum(AnswerRating, values_callable=lambda e: [m.value for m in e]), nullable=False
+    )
+    comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class TurnMetrics(Base):
+    """每轮链路指标：route/intent/状态/token/成本/耗时，不含 prompt/answer 正文。"""
+
+    __tablename__ = "turn_metrics"
+    __table_args__ = (
+        UniqueConstraint("turn_token", name="uk_turn_token"),
+        Index("idx_turn_created", "created_at"),
+        Index("idx_turn_conversation", "conversation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    turn_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    route: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[TurnStatus] = mapped_column(
+        Enum(TurnStatus, values_callable=lambda e: [m.value for m in e]), nullable=False
+    )
+    error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    usage_estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"))
+    model_usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    stages: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cost_cny: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, server_default=text("0"))
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    first_token_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    refusal_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    citations_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
 
 
 class FaithCase(Base):
@@ -325,6 +426,7 @@ class ToolAuditLog(Base):
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    turn_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
     tool_source: Mapped[ToolSource] = mapped_column(

@@ -29,6 +29,8 @@ def test_tables_registered():
         "refund_requests",
         "conversation_summaries",
         "tool_audit_logs",
+        "answer_feedback",
+        "turn_metrics",
     }
 
 
