@@ -9,9 +9,11 @@
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 
 from app.config import settings
+from app.observability.context import get_observer
 from app.kb.sources import source_files_by_root
 from app.rag.evidence import Evidence, assemble, build_evidence_block, to_citations
 from app.rag.refusal import (
@@ -62,6 +64,20 @@ class RagResult:
     rerank_score: float | None = None
 
 
+def _record_stage(kind, seconds, *, texts, items):
+    observer = get_observer()
+    if observer is None:
+        return
+    try:
+        observer.record_stage(
+            kind, model=(settings.embed_model if kind == "embedding"
+                         else settings.rerank_model),
+            duration_ms=int(seconds * 1000), texts=texts, items=items,
+        )
+    except Exception:
+        logger.debug("阶段观测失败", exc_info=True)
+
+
 def _refused(raw_query: str, strategy: str, decision: RefusalDecision, citations=None, **extra) -> RagResult:
     return RagResult(
         refused=True, raw_query=raw_query, strategy=strategy,
@@ -105,7 +121,12 @@ def run_pipeline(
     # 1. 改写（失败退回原话）
     rewrite = rewrite_query(query, model=model)
     bm25_query = build_bm25_query(query, rewrite)
+    embed_start = time.perf_counter()
     dense_vector = embed_query(rewrite.standard_query or query, embeddings=embed)
+    _record_stage(
+        "embedding", time.perf_counter() - embed_start,
+        texts=[rewrite.standard_query or query], items=1,
+    )
 
     # 2. 召回（过滤表达式挂在每一路）
     candidates = recall(
@@ -118,8 +139,13 @@ def run_pipeline(
     rerank_score: float | None = None
     items = candidates
     if has_rerank(chosen) and candidates:
+        rerank_start = time.perf_counter()
         items, rerank_score, rerank_degraded = rerank_stage(
             candidates, rewrite.standard_query or query, reranker=reranker, top_n=rerank_n
+        )
+        _record_stage(
+            "rerank", time.perf_counter() - rerank_start,
+            texts=[rewrite.standard_query or query], items=len(items),
         )
 
     # 4. 检索侧早拒
@@ -206,7 +232,12 @@ def run_expanded_pipeline(
     merged: dict[int, Evidence] = {}
     order: list[int] = []
     for query in cleaned:
+        embed_start = time.perf_counter()
         dense_vector = embed_query(query, embeddings=embed)
+        _record_stage(
+            "embedding", time.perf_counter() - embed_start,
+            texts=[query], items=1,
+        )
         candidates = recall(
             chosen, dense_vector=dense_vector, bm25_query=query,
             top_k=top_k, rrf_k=rrf, filters=filters, milvus=milvus,
@@ -224,8 +255,13 @@ def run_expanded_pipeline(
     rerank_score: float | None = None
     items = candidates
     if has_rerank(chosen) and candidates:
+        rerank_start = time.perf_counter()
         items, rerank_score, rerank_degraded = rerank_stage(
             candidates, cleaned[0], reranker=reranker, top_n=rerank_n
+        )
+        _record_stage(
+            "rerank", time.perf_counter() - rerank_start,
+            texts=[cleaned[0]], items=len(items),
         )
 
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
