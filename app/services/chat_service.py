@@ -454,7 +454,6 @@ class ChatService:
             "route": None,
             "evidence": None,
             "citations": [],
-            "citations_by_message_id": {},
             "evidence_strong": None,
             "retrieval_error": None,
             "refusal_source": None,
