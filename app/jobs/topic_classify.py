@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 from collections import Counter
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -12,6 +13,12 @@ import httpx
 from app.config import settings
 from app.db.engine import SessionFactory, engine
 from app.db.repository import TopicRepository
+
+_TAXONOMY_PATH = Path(__file__).resolve().parents[2] / "config" / "ch10_taxonomy.json"
+_KNOWN_LABELS = frozenset(
+    item["name"]
+    for item in json.loads(_TAXONOMY_PATH.read_text(encoding="utf-8"))["labels"]
+)
 
 
 class TopicClient(Protocol):
@@ -67,6 +74,11 @@ async def run_classify(session_factory, client, *, batch_size=20, limit=None,
         counts = Counter()
         for row, items in zip(roots, results):
             labels = [item["label"] for item in items]
+            if not labels:
+                raise ValueError(f"问题 {row.id} 没有返回任何标签")
+            unknown = [label for label in labels if label not in _KNOWN_LABELS]
+            if unknown:
+                raise ValueError(f"问题 {row.id} 返回了 17 类之外的标签: {unknown}")
             pairs.append((row.id, labels))
             counts.update(labels)
         await repo.upsert_many(pairs)

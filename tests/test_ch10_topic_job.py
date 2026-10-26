@@ -58,6 +58,21 @@ async def test_service_failure_writes_nothing(session_factory):
         assert (await TopicRepository(session).coverage())["classified_roots"] == 0
 
 
+class BadLabelClient:
+    async def classify(self, texts):
+        return {"model_version": "bad", "results": [
+            [{"label": "不存在的类目", "score": 0.9}] for _ in texts
+        ]}
+
+
+async def test_rejects_unknown_label_without_writing(session_factory):
+    await _seed(session_factory, 25)
+    with pytest.raises(ValueError):
+        await run_classify(session_factory, BadLabelClient(), batch_size=20)
+    async with session_factory() as session:
+        assert (await TopicRepository(session).coverage())["classified_roots"] == 0
+
+
 async def test_dry_run_does_not_write(session_factory):
     await _seed(session_factory, 25)
     result = await run_classify(session_factory, FakeClient(), batch_size=20, dry_run=True)
