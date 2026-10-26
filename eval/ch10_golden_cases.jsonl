@@ -1,0 +1,20 @@
+{"text": "买大了想退", "expected_labels": ["尺码", "退换货"], "note": "多诉求：尺码+退货"}
+{"text": "运费太贵了，而且物流三天没动", "expected_labels": ["运费", "物流"], "note": "运费管钱、物流管货"}
+{"text": "还在保修期吗，能修吗", "expected_labels": ["保修维修"], "note": "修归保修维修，不能联想退换货"}
+{"text": "刚买的就降价了，能补差价吗", "expected_labels": ["价保"], "note": "补差价归价保，不是优惠活动"}
+{"text": "满 200 减 30 的券怎么用", "expected_labels": ["优惠活动"], "note": "券和满减归优惠活动"}
+{"text": "收到就破了，想退货", "expected_labels": ["质量问题", "退换货"], "note": "到货即破损+退货双诉求"}
+{"text": "订单下错了，还没发货能取消吗", "expected_labels": ["订单修改"], "note": "取消未发货订单归订单修改"}
+{"text": "发票抬头写错了能重开吗", "expected_labels": ["发票"], "note": "发票本身"}
+{"text": "这个猫粮适合幼猫吗", "expected_labels": ["商品信息"], "note": "商品属性"}
+{"text": "这个什么时候补货", "expected_labels": ["库存补货"], "note": "有没有货"}
+{"text": "我的积分怎么兑换", "expected_labels": ["会员积分"], "note": "积分权益"}
+{"text": "登录不上，密码忘了", "expected_labels": ["账号"], "note": "账号本身"}
+{"text": "差评能删吗", "expected_labels": ["评价"], "note": "评价行为"}
+{"text": "支付失败但是扣款了", "expected_labels": ["支付"], "note": "支付环节"}
+{"text": "能改收货地址吗", "expected_labels": ["订单修改"], "note": "改订单内容"}
+{"text": "快递一直不更新，到哪了", "expected_labels": ["物流"], "note": "运输进度"}
+{"text": "退货的邮费谁出", "expected_labels": ["运费", "退换货"], "note": "费用+退货双诉求"}
+{"text": "我是会员，有专属优惠券吗", "expected_labels": ["会员积分", "优惠活动"], "note": "会员权益+券"}
+{"text": "你们老板在吗", "expected_labels": ["其他"], "note": "16 类之外"}
+{"text": "这个和图片颜色不一样", "expected_labels": ["质量问题"], "note": "与描述不符"}

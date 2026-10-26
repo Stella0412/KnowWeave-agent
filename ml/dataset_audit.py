@@ -25,13 +25,12 @@ class DatasetError(ValueError):
     pass
 
 
-def load_split(path: str | Path) -> list[dict]:
+def read_jsonl(path: str | Path) -> list[dict]:
     path = Path(path)
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError as exc:
         raise DatasetError(f"数据集文件不存在: {path}") from exc
-
     rows = []
     for lineno, line in enumerate(lines, 1):
         if not line.strip():
@@ -42,6 +41,14 @@ def load_split(path: str | Path) -> list[dict]:
             raise DatasetError(f"{path.name}:{lineno} 不是合法 JSON: {exc}") from exc
         if not isinstance(row, dict):
             raise DatasetError(f"{path.name}:{lineno} 必须是 JSON 对象")
+        rows.append(row)
+    return rows
+
+
+def load_split(path: str | Path) -> list[dict]:
+    path = Path(path)
+    rows = []
+    for lineno, row in enumerate(read_jsonl(path), 1):
         text = row.get("text")
         if not isinstance(text, str) or not text.strip():
             raise DatasetError(f"{path.name}:{lineno} text 必须是非空字符串")
