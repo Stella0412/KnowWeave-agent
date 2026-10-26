@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 错例复核</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  header select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; }
+  main { max-width:1200px; margin:0 auto; padding:16px 20px 40px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; overflow-x:auto; }
+  .hint { color:var(--muted); margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; font-weight:600; white-space:nowrap; }
+  td.text { min-width:240px; white-space:normal; }
+  .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:0 7px; font-size:12px; margin:0 4px 4px 0; }
+  .fp { color:#b54708; font-weight:700; }
+  .fn { color:var(--bad); font-weight:700; }
+  .muted { color:var(--muted); }
+  #error { color:var(--bad); min-height:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ch10 · 错例复核</h1>
+  <a href="/acceptance">验收总览</a>
+  <a href="/acceptance/eval">评测详情</a>
+  <select id="limit">
+    <option value="50">50 条</option>
+    <option value="200">200 条</option>
+    <option value="500">500 条</option>
+  </select>
+</header>
+<main>
+  <p class="hint">每类最多抽取固定数量 FP/FN；CSV 另有 verdict 与 notes 两列留白，供人工填写复核结论。</p>
+  <div id="error"></div>
+  <section>
+    <table>
+      <thead><tr><th>ID</th><th>原文</th><th>真实标签</th><th>预测标签</th><th>类型</th><th>涉及类目</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script>
+function text(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+
+function split(value) {
+  return value ? value.split("|").filter(Boolean) : [];
+}
+
+function labelsCell(value, empty) {
+  const td = document.createElement("td");
+  const labels = split(value);
+  if (!labels.length) {
+    td.textContent = empty;
+    td.className = "muted";
+    return td;
+  }
+  for (const label of labels) td.append(text("span", label, "badge"));
+  return td;
+}
+
+async function load() {
+  const limit = document.getElementById("limit").value;
+  const errorBox = document.getElementById("error");
+  errorBox.textContent = "";
+  try {
+    const response = await fetch(`/acceptance/api/errors?limit=${limit}`);
+    if (!response.ok) throw new Error(response.status);
+    const data = await response.json();
+    const body = document.getElementById("rows");
+    body.replaceChildren();
+    if (!data.errors.length) {
+      const tr = document.createElement("tr");
+      const td = text("td", "暂无错例 CSV：先运行评测。", "muted");
+      td.colSpan = 6;
+      tr.append(td);
+      body.append(tr);
+      return;
+    }
+    for (const item of data.errors) {
+      const tr = document.createElement("tr");
+      tr.append(
+        text("td", item.id),
+        text("td", item.text, "text"),
+        labelsCell(item.gold, "（空）"),
+        labelsCell(item.pred, "（空）"),
+        text("td", item.error_type, item.error_type === "FN" ? "fn" : "fp"),
+        text("td", item.label),
+      );
+      body.append(tr);
+    }
+  } catch (error) {
+    errorBox.textContent = "错例加载失败：" + error.message;
+  }
+}
+
+document.getElementById("limit").addEventListener("change", load);
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 后台管理</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { max-width:1080px; margin:0 auto; padding:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+  a.card { display:block; background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; text-decoration:none; color:inherit; }
+  a.card:hover { border-color:var(--accent); }
+  .card h2 { font-size:15px; margin:0 0 6px; color:var(--accent); }
+  .card p { margin:0; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>知序 · 后台管理</h1>
+  <a href="/">聊天页</a>
+  <a href="/review">数据飞轮</a>
+  <a href="/observability">观测与成本</a>
+</header>
+<main>
+  <div class="grid">
+    <a class="card" href="/acceptance">
+      <h2>验收总览</h2>
+      <p>模型、数据集、测试指标、ONNX 对齐与黄金用例的门禁结果。</p>
+    </a>
+    <a class="card" href="/acceptance/eval">
+      <h2>评测详情</h2>
+      <p>测试集每类 P/R/F1 与 2×2 混淆矩阵、黄金用例、真实切片。</p>
+    </a>
+    <a class="card" href="/acceptance/data">
+      <h2>数据产物</h2>
+      <p>训练集/验证集/测试集、模型、报告与错例 CSV 的落盘情况。</p>
+    </a>
+    <a class="card" href="/acceptance/errors">
+      <h2>错例复核</h2>
+      <p>按类目抽取的 FP/FN 错例，供人工确认标签与边界。</p>
+    </a>
+    <a class="card" href="/topics">
+      <h2>主题分布</h2>
+      <p>低置信度问题的 17 类主题分布、原始/加权口径与多标签组合。</p>
+    </a>
+    <a class="card" href="/review">
+      <h2>数据飞轮待审队列</h2>
+      <p>低置信度问题合并、关闭与转知识库的人工处理入口。</p>
+    </a>
+    <a class="card" href="/observability">
+      <h2>观测与成本</h2>
+      <p>对话链路、工具调用与 token 成本。</p>
+    </a>
+  </div>
+</main>
+</body>
+</html>

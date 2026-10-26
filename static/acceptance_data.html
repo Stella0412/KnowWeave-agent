@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 数据产物</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { max-width:1200px; margin:0 auto; padding:20px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; font-weight:600; }
+  td.path { font-family:ui-monospace,Consolas,monospace; font-size:12px; word-break:break-all; }
+  .ok { color:#067647; font-weight:700; }
+  .bad { color:var(--bad); font-weight:700; }
+  .muted { color:var(--muted); }
+  #error { color:var(--bad); min-height:20px; margin-bottom:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ch10 · 数据产物</h1>
+  <a href="/acceptance">验收总览</a>
+  <a href="/acceptance/eval">评测详情</a>
+  <a href="/acceptance/errors">错例复核</a>
+</header>
+<main>
+  <div id="error"></div>
+  <section>
+    <table>
+      <thead><tr><th>产物</th><th>路径</th><th>存在</th><th>大小</th><th>更新时间</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script>
+function text(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+
+function size(bytes) {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+async function load() {
+  try {
+    const response = await fetch("/acceptance/api/data");
+    if (!response.ok) throw new Error(response.status);
+    const data = await response.json();
+    const body = document.getElementById("rows");
+    body.replaceChildren();
+    for (const item of data.artifacts) {
+      const tr = document.createElement("tr");
+      tr.append(
+        text("td", item.name),
+        text("td", item.path, "path"),
+        text("td", item.exists ? "✅" : "—", item.exists ? "ok" : "muted"),
+        text("td", size(item.bytes)),
+        text("td", item.modified_at || "—", "muted"),
+      );
+      body.append(tr);
+    }
+  } catch (error) {
+    document.getElementById("error").textContent = "产物列表加载失败：" + error.message;
+  }
+}
+load();
+</script>
+</body>
+</html>

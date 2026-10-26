@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 验收总览</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --ok:#067647; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { max-width:1100px; margin:0 auto; padding:16px 20px 40px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:16px; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .card .value { font-size:22px; font-weight:700; }
+  .card .label { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-size:12px; font-weight:600; }
+  .ok { color:var(--ok); font-weight:700; }
+  .bad { color:var(--bad); font-weight:700; }
+  .muted { color:var(--muted); }
+  #error { color:var(--bad); min-height:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ch10 · 验收总览</h1>
+  <a href="/admin">后台管理</a>
+  <a href="/acceptance/eval">评测详情</a>
+  <a href="/acceptance/data">数据产物</a>
+  <a href="/acceptance/errors">错例复核</a>
+  <a href="/topics">主题分布</a>
+</header>
+<main>
+  <div id="error"></div>
+  <div class="cards">
+    <div class="card"><div class="value" id="run">—</div><div class="label">训练 run</div></div>
+    <div class="card"><div class="value" id="macro">—</div><div class="label">macro-F1</div></div>
+    <div class="card"><div class="value" id="micro">—</div><div class="label">micro-F1</div></div>
+    <div class="card"><div class="value" id="exact">—</div><div class="label">完全匹配率</div></div>
+    <div class="card"><div class="value" id="golden">—</div><div class="label">黄金用例</div></div>
+    <div class="card"><div class="value" id="real">—</div><div class="label">真实切片</div></div>
+  </div>
+  <section>
+    <h2>验收门禁</h2>
+    <table>
+      <thead><tr><th>检查项</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody id="checks"><tr><td colspan="3" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>数据集与产物</h2>
+    <table>
+      <tbody id="facts"><tr><td class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script>
+function text(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+
+function metric(value) {
+  return value === null || value === undefined ? "—" : Number(value).toFixed(4);
+}
+
+function fact(label, value) {
+  const tr = document.createElement("tr");
+  tr.append(text("th", label), text("td", String(value)));
+  return tr;
+}
+
+async function load() {
+  try {
+    const response = await fetch("/acceptance/api/overview");
+    if (!response.ok) throw new Error(response.status);
+    const data = await response.json();
+    if (!data.ready) {
+      document.getElementById("error").textContent = "尚未生成评测结果；先跑通训练与评测，再回到本页。";
+    }
+    document.getElementById("run").textContent = data.model.run || "—";
+    document.getElementById("macro").textContent = metric(data.test.macro_f1);
+    document.getElementById("micro").textContent = metric(data.test.micro_f1);
+    document.getElementById("exact").textContent = metric(data.test.exact_match);
+    document.getElementById("golden").textContent = `${data.golden.passed}/${data.golden.total}`;
+    document.getElementById("real").textContent = data.real_slice;
+    const body = document.getElementById("checks");
+    body.replaceChildren();
+    for (const item of data.checks) {
+      const tr = document.createElement("tr");
+      tr.append(
+        text("td", item.name),
+        text("td", item.ok ? "✅ 通过" : "❌ 未通过", item.ok ? "ok" : "bad"),
+        text("td", item.detail || "", "muted"),
+      );
+      body.append(tr);
+    }
+    const facts = document.getElementById("facts");
+    facts.replaceChildren();
+    facts.append(
+      fact("基座模型", data.model.base_model || "—"),
+      fact("训练时间", data.model.trained_at || "—"),
+      fact("ONNX 导出", data.model.exported ? `opset ${data.model.opset}，max|Δ|=${data.model.max_abs_diff}` : "尚未导出"),
+      fact("训练集 / 验证集 / 测试集", `${data.dataset.train} / ${data.dataset.val} / ${data.dataset.test}`),
+      fact("多标签样本", data.dataset.multi_label),
+      fact("类目数", data.dataset.labels),
+      fact("评测生成时间", data.generated_at || "—"),
+    );
+  } catch (error) {
+    document.getElementById("error").textContent = "验收数据加载失败：" + error.message;
+  }
+}
+load();
+</script>
+</body>
+</html>

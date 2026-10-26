@@ -24,8 +24,10 @@ from app.observability.metrics import TurnMetricsWriter
 from app.observability.spans import tool_span
 from app.observability.wiring import build_observability
 from app.routers import (
-    chat, conversations, extract, feedback, observability, rag_eval, review, topics,
+    acceptance, chat, conversations, extract, feedback, observability, rag_eval,
+    review, topics,
 )
+from app.services.acceptance_service import AcceptanceService
 from app.services.topic_admin_service import TopicAdminService
 from app.services.chat_service import build_chat_service
 from app.services.context_manager import log_startup_budget
@@ -120,6 +122,7 @@ async def lifespan(app: FastAPI):
             SessionFactory, settings,
         )
         app.state.topic_admin = TopicAdminService(SessionFactory)
+        app.state.acceptance = AcceptanceService()
         try:
             yield
         finally:
@@ -140,8 +143,14 @@ app.include_router(feedback.router)
 app.include_router(review.router)
 app.include_router(observability.router)
 app.include_router(topics.router)
+app.include_router(acceptance.router)
 
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(_STATIC_DIR / "index.html")
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "admin.html")

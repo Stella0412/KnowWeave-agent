@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 评测详情</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { max-width:1200px; margin:0 auto; padding:16px 20px 40px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:16px; overflow-x:auto; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-size:12px; font-weight:600; }
+  td.text { white-space:normal; min-width:220px; }
+  .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:0 7px; font-size:12px; margin:0 4px 4px 0; }
+  .ok { color:#067647; font-weight:700; }
+  .bad { color:var(--bad); font-weight:700; }
+  .muted { color:var(--muted); }
+  #error { color:var(--bad); min-height:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ch10 · 评测详情</h1>
+  <a href="/acceptance">验收总览</a>
+  <a href="/acceptance/data">数据产物</a>
+  <a href="/acceptance/errors">错例复核</a>
+</header>
+<main>
+  <div id="error"></div>
+  <section>
+    <h2>每类指标与 2×2 混淆矩阵</h2>
+    <div id="meta" class="muted"></div>
+    <table>
+      <thead><tr><th>类目</th><th>support</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>P</th><th>R</th><th>F1</th><th>阈值</th></tr></thead>
+      <tbody id="per-class"><tr><td colspan="10" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>黄金用例</h2>
+    <table>
+      <thead><tr><th>用例</th><th>期望</th><th>预测</th><th>结果</th></tr></thead>
+      <tbody id="golden"><tr><td colspan="4" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>真实域切片</h2>
+    <table>
+      <thead><tr><th>问题 #</th><th>原文</th><th>真实标签</th><th>预测标签</th><th>结果</th></tr></thead>
+      <tbody id="real"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script>
+function text(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+
+function cell(value) {
+  return text("td", String(value));
+}
+
+function labelsCell(labels, empty = "—") {
+  const td = document.createElement("td");
+  if (!labels || !labels.length) {
+    td.textContent = empty;
+    return td;
+  }
+  for (const label of labels) td.append(text("span", label, "badge"));
+  return td;
+}
+
+function same(a, b) {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort();
+  const right = [...b].sort();
+  return left.every((item, index) => item === right[index]);
+}
+
+async function load() {
+  try {
+    const response = await fetch("/acceptance/api/eval");
+    if (!response.ok) throw new Error(response.status);
+    const data = await response.json();
+    const metrics = data.metrics;
+    if (!metrics.labels) {
+      document.getElementById("error").textContent = "尚无评测结果：请先生成 data/ch10/eval/metrics.json。";
+      return;
+    }
+    document.getElementById("meta").textContent =
+      `测试集 ${metrics.total} 条 · macro-F1 ${metrics.macro_f1} · micro-F1 ${metrics.micro_f1} · 完全匹配 ${metrics.exact_match} · 生成于 ${data.meta.generated_at || "—"}`;
+    const body = document.getElementById("per-class");
+    body.replaceChildren();
+    for (const [name, item] of Object.entries(metrics.labels)) {
+      const tr = document.createElement("tr");
+      tr.append(
+        cell(name), cell(item.support), cell(item.tp), cell(item.fp), cell(item.fn), cell(item.tn),
+        cell(item.precision), cell(item.recall), cell(item.f1),
+        cell(data.thresholds[name] === undefined ? "0.5" : data.thresholds[name]),
+      );
+      body.append(tr);
+    }
+
+    const golden = document.getElementById("golden");
+    golden.replaceChildren();
+    if (!data.golden.length) {
+      const tr = document.createElement("tr");
+      const td = text("td", "本次未运行黄金用例。", "muted");
+      td.colSpan = 4;
+      tr.append(td);
+      golden.append(tr);
+    }
+    for (const item of data.golden) {
+      const tr = document.createElement("tr");
+      const ok = same(item.expected, item.pred);
+      tr.append(
+        text("td", item.text, "text"),
+        labelsCell(item.expected),
+        labelsCell(item.pred, "（空）"),
+        text("td", ok ? "✅ 一致" : "❌ 不一致", ok ? "ok" : "bad"),
+      );
+      golden.append(tr);
+    }
+
+    const real = document.getElementById("real");
+    real.replaceChildren();
+    if (!data.real_slice.length) {
+      const tr = document.createElement("tr");
+      const td = text("td", "本次未提供带标签的真实切片。", "muted");
+      td.colSpan = 5;
+      tr.append(td);
+      real.append(tr);
+    }
+    for (const item of data.real_slice) {
+      const tr = document.createElement("tr");
+      const ok = same(item.gold, item.pred);
+      tr.append(
+        cell(item.question_id), text("td", item.text, "text"),
+        labelsCell(item.gold), labelsCell(item.pred, "（空）"),
+        text("td", ok ? "✅ 一致" : "❌ 不一致", ok ? "ok" : "bad"),
+      );
+      real.append(tr);
+    }
+  } catch (error) {
+    document.getElementById("error").textContent = "评测详情加载失败：" + error.message;
+  }
+}
+load();
+</script>
+</body>
+</html>

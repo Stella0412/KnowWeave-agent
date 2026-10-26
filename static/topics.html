@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 主题分布</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { max-width:1200px; margin:0 auto; padding:16px 20px 40px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:16px; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .card .value { font-size:22px; font-weight:700; }
+  .card .label { color:var(--muted); font-size:12px; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  button { font:inherit; border:1px solid var(--line); background:#fff; border-radius:6px; padding:5px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .bar-row { display:grid; grid-template-columns:120px 1fr 96px; gap:10px; align-items:center; padding:4px 0; cursor:pointer; }
+  .bar-row:hover a { text-decoration:underline; }
+  .bar-row a { color:inherit; text-decoration:none; }
+  .bar { height:14px; background:#dbeafe; border-radius:3px; min-width:2px; }
+  .bar-row.selected .bar { background:#2563eb; }
+  .bar-row.selected a { font-weight:700; }
+  .count { color:var(--muted); font-size:12px; text-align:right; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; font-weight:600; }
+  .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:0 7px; font-size:12px; margin:0 4px 4px 0; }
+  .muted { color:var(--muted); }
+  #samples { min-height:60px; }
+  .sample { border-top:1px solid var(--line); padding:9px 0; }
+  .sample:first-child { border-top:0; }
+  #error { color:var(--bad); min-height:20px; }
+  @media (max-width:760px) { .bar-row { grid-template-columns:90px 1fr 80px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>数据飞轮 · 主题分布</h1>
+  <a href="/admin">后台管理</a>
+  <a href="/review">待审队列</a>
+  <button id="refresh">刷新</button>
+</header>
+<main>
+  <div class="cards">
+    <div class="card"><div class="value" id="total-roots">—</div><div class="label">已归类根问题（30 天）</div></div>
+    <div class="card"><div class="value" id="total-weighted">—</div><div class="label">加权总量（重复次数）</div></div>
+    <div class="card"><div class="value" id="unclassified">—</div><div class="label">未归类根问题</div></div>
+    <div class="card"><div class="value" id="last-classified">—</div><div class="label">最近归类时间</div></div>
+  </div>
+  <section>
+    <div class="toolbar">
+      <h2 style="margin:0;flex:1">17 类分布</h2>
+      <button id="by-raw" class="active">原始</button>
+      <button id="by-weighted">加权</button>
+    </div>
+    <div id="error"></div>
+    <div id="bars" class="muted">加载中…</div>
+  </section>
+  <section>
+    <h2>多标签组合 Top 10</h2>
+    <table>
+      <thead><tr><th>组合</th><th>数量</th></tr></thead>
+      <tbody id="combos"><tr><td colspan="2" class="muted">加载中…</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2 id="samples-title">类目问题样例</h2>
+    <div id="samples" class="muted">点击上方任一主题查看问题样例。</div>
+  </section>
+</main>
+<script>
+const state = { weighted: false, label: null };
+
+function text(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || response.status);
+  return response.json();
+}
+
+function renderBars(data) {
+  const wrap = document.getElementById("bars");
+  wrap.replaceChildren();
+  wrap.className = "";
+  const labels = [...data.labels].sort((a, b) => b.count - a.count);
+  const max = Math.max(1, ...labels.map(item => item.count));
+  for (const item of labels) {
+    const row = document.createElement("div");
+    row.className = "bar-row" + (state.label === item.label ? " selected" : "");
+    const link = text("a", item.label);
+    link.href = "/topics/questions?label=" + encodeURIComponent(item.label);
+    link.addEventListener("click", event => event.stopPropagation());
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.style.width = Math.max(1, item.count / max * 100) + "%";
+    const count = text("div", `${item.count} · ${(item.share * 100).toFixed(1)}%`, "count");
+    row.append(link, bar, count);
+    row.addEventListener("click", () => selectLabel(item.label));
+    wrap.append(row);
+  }
+}
+
+function renderCombos(combos) {
+  const body = document.getElementById("combos");
+  body.replaceChildren();
+  if (!combos.length) {
+    const tr = document.createElement("tr");
+    const td = text("td", "暂无多标签组合", "muted");
+    td.colSpan = 2;
+    tr.append(td);
+    body.append(tr);
+    return;
+  }
+  for (const item of combos) {
+    const tr = document.createElement("tr");
+    const labels = document.createElement("td");
+    for (const label of item.labels) labels.append(text("span", label, "badge"));
+    tr.append(labels, text("td", String(item.count)));
+    body.append(tr);
+  }
+}
+
+async function selectLabel(label) {
+  state.label = label;
+  document.getElementById("samples-title").textContent = `类目问题样例 · ${label}`;
+  const box = document.getElementById("samples");
+  box.className = "muted";
+  box.textContent = "加载中…";
+  document.querySelectorAll(".bar-row").forEach(row => {
+    row.classList.toggle("selected", row.firstChild.textContent === label);
+  });
+  try {
+    const data = await fetchJson(`/topics/api/questions?label=${encodeURIComponent(label)}&limit=20`);
+    box.replaceChildren();
+    box.className = "";
+    if (!data.length) {
+      box.textContent = "该类目暂无问题样例。";
+      box.className = "muted";
+      return;
+    }
+    for (const item of data) {
+      const row = document.createElement("div");
+      row.className = "sample";
+      const head = document.createElement("div");
+      head.append(text("strong", item.raw_question));
+      for (const tag of item.labels) head.append(text("span", tag, "badge"));
+      row.append(head);
+      row.append(text("div", `问题 #${item.question_id} · 重复 ${item.duplicate_count} 次 · 归类于 ${item.classified_at}`, "muted"));
+      box.append(row);
+    }
+  } catch (error) {
+    box.className = "muted";
+    box.textContent = "样例加载失败：" + error.message;
+  }
+}
+
+async function load() {
+  const errorBox = document.getElementById("error");
+  errorBox.textContent = "";
+  try {
+    const data = await fetchJson(`/topics/api/distribution?days=30&weighted=${state.weighted}`);
+    document.getElementById("total-roots").textContent = data.total_roots;
+    document.getElementById("total-weighted").textContent = data.total_weighted;
+    document.getElementById("unclassified").textContent = data.unclassified_roots;
+    document.getElementById("last-classified").textContent = data.last_classified_at || "—";
+    renderBars(data);
+    renderCombos(data.combos);
+  } catch (error) {
+    errorBox.textContent = "分布加载失败：" + error.message;
+    const wrap = document.getElementById("bars");
+    wrap.className = "muted";
+    wrap.textContent = "暂无数据。";
+  }
+}
+
+document.getElementById("by-raw").addEventListener("click", () => {
+  state.weighted = false;
+  document.getElementById("by-raw").classList.add("active");
+  document.getElementById("by-weighted").classList.remove("active");
+  load();
+});
+document.getElementById("by-weighted").addEventListener("click", () => {
+  state.weighted = true;
+  document.getElementById("by-weighted").classList.add("active");
+  document.getElementById("by-raw").classList.remove("active");
+  load();
+});
+document.getElementById("refresh").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>

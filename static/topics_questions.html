@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知序 · 类目问题列表</title>
+<style>
+  :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1f2937; background:#f7f8fa; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { max-width:900px; margin:0 auto; padding:20px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  .sample { border-top:1px solid var(--line); padding:10px 0; }
+  .sample:first-of-type { border-top:0; }
+  .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:0 7px; font-size:12px; margin:0 4px 4px 0; }
+  .muted { color:var(--muted); }
+  #error { color:var(--bad); min-height:20px; margin-bottom:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>数据飞轮 · 类目问题列表</h1>
+  <a href="/topics">返回主题分布</a>
+  <a href="/admin">后台管理</a>
+</header>
+<main>
+  <section>
+    <h2 id="title">类目问题</h2>
+    <div id="error"></div>
+    <div id="list" class="muted">加载中…</div>
+  </section>
+</main>
+<script>
+const label = new URLSearchParams(location.search).get("label") || "";
+
+function text(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+
+async function load() {
+  const errorBox = document.getElementById("error");
+  const list = document.getElementById("list");
+  if (!label) {
+    document.getElementById("title").textContent = "类目问题";
+    list.textContent = "缺少 label 参数，请从主题分布页点击类目进入。";
+    return;
+  }
+  document.getElementById("title").textContent = `类目问题 · ${label}`;
+  document.title = `知序 · ${label} 问题`;
+  try {
+    const response = await fetch(`/topics/api/questions?label=${encodeURIComponent(label)}&limit=100`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || response.status);
+    }
+    const items = await response.json();
+    list.replaceChildren();
+    list.className = "";
+    if (!items.length) {
+      list.textContent = "该类目暂无已归类问题。";
+      list.className = "muted";
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "sample";
+      const head = document.createElement("div");
+      head.append(text("strong", item.raw_question));
+      for (const tag of item.labels) head.append(text("span", tag, "badge"));
+      row.append(head);
+      row.append(text("div", `问题 #${item.question_id} · 重复 ${item.duplicate_count} 次 · 归类于 ${item.classified_at}`, "muted"));
+      list.append(row);
+    }
+  } catch (error) {
+    list.className = "muted";
+    list.textContent = "加载失败：" + error.message;
+    errorBox.textContent = "";
+  }
+}
+
+load();
+</script>
+</body>
+</html>

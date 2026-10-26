@@ -21,6 +21,11 @@ def page() -> FileResponse:
     return FileResponse(_STATIC_DIR / "topics.html")
 
 
+@router.get("/questions", include_in_schema=False)
+def questions_page() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "topics_questions.html")
+
+
 @router.get("/api/distribution", response_model=DistributionResponse)
 async def distribution(request: Request, days: int = 30, weighted: bool = False):
     if not 1 <= days <= 365:
