@@ -17,6 +17,6 @@
     {"name": "账号", "definition": "登录、注册、密码、账号绑定、注销、被盗。", "boundary": "账号本身归本类；会员权益归『会员积分』。", "keywords": ["登录", "注册", "密码", "绑定", "注销", "被盗"], "examples": ["登录不上", "怎么改密码", "账号能注销吗"], "confusable_with": ["会员积分"], "positive_cues": ["登录", "账号", "密码", "注册"], "negative_cues": ["积分", "会员等级"]},
     {"name": "会员积分", "definition": "会员等级、积分获取/兑换/过期、会员权益。", "boundary": "等级与积分归本类；优惠券使用归『优惠活动』。", "keywords": ["会员", "积分", "等级", "兑换", "过期"], "examples": ["积分怎么兑换", "会员等级怎么升", "积分会过期吗"], "confusable_with": ["优惠活动", "账号"], "positive_cues": ["积分", "会员", "等级"], "negative_cues": ["优惠券", "登录"]},
     {"name": "评价", "definition": "评价修改/删除、差评、晒单、评价规则。", "boundary": "评价行为归本类；商品缺陷归『质量问题』。", "keywords": ["评价", "差评", "晒单", "删除评价", "修改评价"], "examples": ["差评能删吗", "怎么修改评价", "晒单有奖励吗"], "confusable_with": ["质量问题", "商品信息"], "positive_cues": ["评价", "差评", "晒单"], "negative_cues": ["质量", "破损"]},
-    {"name": "其他", "definition": "其余 16 类均不适用的闲聊、催单、投诉、建议等。", "boundary": "仅在其余类都不适用时单独使用；不得与其他标签共存。", "keywords": ["投诉", "建议", "催单", "在吗"], "examples": ["你们老板在吗", "我要投诉", "能不能快点"], "confusable_with": [], "positive_cues": [], "negative_cues": []}
+    {"name": "其他", "definition": "其余 16 类均不适用的闲聊、催单、投诉、建议等。", "boundary": "仅在其他 16 类都不适用时单独使用；同一句同时含转人工、投诉等泛诉求与具体主题时，可与其他标签共存。", "keywords": ["投诉", "建议", "催单", "在吗"], "examples": ["你们老板在吗", "我要投诉", "能不能快点"], "confusable_with": [], "positive_cues": [], "negative_cues": []}
   ]
 }
