@@ -1,8 +1,8 @@
 SET NAMES utf8mb4;
 
 CREATE TABLE topic_classifications (
-  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
-  question_id   BIGINT UNSIGNED NOT NULL                COMMENT '归类的问题,指向 low_confidence_questions.id',
+  id            BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  question_id   BIGINT NOT NULL                COMMENT '归类的问题,指向 low_confidence_questions.id',
   labels        JSON            NOT NULL                COMMENT '多标签,17 类权威类目里命中的若干个',
   classified_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '归类时间',
   PRIMARY KEY (id),
