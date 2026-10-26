@@ -46,7 +46,7 @@ class _DemoModel:
             return AIMessage(
                 content="",
                 tool_calls=[
-                    {"name": "echo", "args": {"text": "喵"}, "id": "c1", "type": "tool_call"}
+                    {"name": "echo", "args": {"text": "你好"}, "id": "c1", "type": "tool_call"}
                 ],
             )
         return AIMessage(content="裸循环已收敛：工具结果已经回灌。")

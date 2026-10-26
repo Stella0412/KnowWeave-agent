@@ -532,10 +532,10 @@
       <header class="header">
         <button class="sidebar-toggle" id="btnSidebar" type="button">会话</button>
         <div class="brand">
-          <div class="avatar">🐱</div>
+          <div class="avatar" role="img" aria-label="客服知序" title="知序">知</div>
           <div>
-            <h1>知序智能客服</h1>
-            <p class="status"><span class="dot"></span>在线 · 纯对话体验版</p>
+            <h1>知序</h1>
+            <p class="status"><span class="dot"></span>智能客服在线</p>
           </div>
         </div>
         <div class="header-actions">
@@ -706,7 +706,10 @@
     msg.className = 'msg assistant';
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
-    avatar.textContent = '🐱';
+    avatar.textContent = '知';
+    avatar.setAttribute('role', 'img');
+    avatar.setAttribute('aria-label', '客服知序');
+    avatar.title = '知序';
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.innerHTML = '<div class="body">' + renderMarkdown(markdown || '') + '</div>';
@@ -1052,7 +1055,7 @@
     notice.className = 'system-notice';
     notice.textContent = '已转接人工客服';
     chatEl.appendChild(notice);
-    addAssistantMessage('您好，我是客服知序，请问有什么可以帮您的？');
+    addAssistantMessage('您好，我是知序的人工客服，很高兴为您服务。');
     scrollToBottom();
   }
 

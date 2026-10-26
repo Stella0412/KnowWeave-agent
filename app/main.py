@@ -127,7 +127,7 @@ async def lifespan(app: FastAPI):
                     logger.warning("Langfuse flush 失败", exc_info=True)
 
 
-app = FastAPI(title="知序智能客服", lifespan=lifespan)
+app = FastAPI(title="知序 · 智能客服", lifespan=lifespan)
 app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(extract.router)
