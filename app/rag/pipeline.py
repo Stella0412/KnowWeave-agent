@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from app.config import settings
 from app.observability.context import get_observer
+from app.observability.spans import observation_scope
 from app.kb.sources import source_files_by_root
 from app.rag.evidence import Evidence, assemble, build_evidence_block, to_citations
 from app.rag.refusal import (
@@ -86,7 +87,72 @@ def _refused(raw_query: str, strategy: str, decision: RefusalDecision, citations
     )
 
 
+def _retrieval_summary(result: RagResult) -> dict:
+    citations = result.citations or []
+    return {
+        "refused": result.refused,
+        "refusal_source": result.refusal_source,
+        "refusal_reason": result.refusal_reason,
+        "document_count": len(citations),
+        "documents": [
+            {
+                "n": item.get("n"),
+                "chunk_id": item.get("chunk_id"),
+                "section_path": item.get("section_path"),
+                "score": item.get("score"),
+            }
+            for item in citations[:8]
+        ],
+        "rerank_score": result.rerank_score,
+    }
+
+
 def run_pipeline(
+    raw_query: str,
+    *,
+    strategy: str | None = None,
+    filters: dict[str, str | list[str]] | None = None,
+    embed=None,
+    milvus=None,
+    reranker=None,
+    model=None,
+    source_files: dict[str, str] | None = None,
+    recall_top_k: int | None = None,
+    rerank_top_n: int | None = None,
+    rrf_k: int | None = None,
+) -> RagResult:
+    """公开入口：包一层 retriever observation 后跑 `_run_pipeline`。"""
+    with observation_scope(
+        "retriever",
+        "retrieve-knowledge",
+        input={
+            "query": (raw_query or "").strip()[:_QUERY_MAX_LENGTH],
+            "strategy": strategy or settings.rag_strategy,
+        },
+        metadata={
+            "top_k": recall_top_k or settings.recall_top_k,
+            "rerank_top_n": rerank_top_n or settings.rerank_top_n,
+        },
+    ) as span:
+        result = _run_pipeline(
+            raw_query,
+            strategy=strategy,
+            filters=filters,
+            embed=embed,
+            milvus=milvus,
+            reranker=reranker,
+            model=model,
+            source_files=source_files,
+            recall_top_k=recall_top_k,
+            rerank_top_n=rerank_top_n,
+            rrf_k=rrf_k,
+        )
+        if span is not None:
+            span.update(output=_retrieval_summary(result))
+        return result
+
+
+def _run_pipeline(
     raw_query: str,
     *,
     strategy: str | None = None,
@@ -121,12 +187,19 @@ def run_pipeline(
     # 1. 改写（失败退回原话）
     rewrite = rewrite_query(query, model=model)
     bm25_query = build_bm25_query(query, rewrite)
-    embed_start = time.perf_counter()
-    dense_vector = embed_query(rewrite.standard_query or query, embeddings=embed)
-    _record_stage(
-        "embedding", time.perf_counter() - embed_start,
-        texts=[rewrite.standard_query or query], items=1,
-    )
+    embed_text = rewrite.standard_query or query
+    with observation_scope(
+        "embedding", "embed-query",
+        input={"query": embed_text}, model=settings.embed_model,
+    ) as embedding:
+        embed_start = time.perf_counter()
+        dense_vector = embed_query(embed_text, embeddings=embed)
+        _record_stage(
+            "embedding", time.perf_counter() - embed_start,
+            texts=[embed_text], items=1,
+        )
+        if embedding is not None:
+            embedding.update(output={"dimensions": len(dense_vector or [])})
 
     # 2. 召回（过滤表达式挂在每一路）
     candidates = recall(
@@ -139,14 +212,25 @@ def run_pipeline(
     rerank_score: float | None = None
     items = candidates
     if has_rerank(chosen) and candidates:
-        rerank_start = time.perf_counter()
-        items, rerank_score, rerank_degraded = rerank_stage(
-            candidates, rewrite.standard_query or query, reranker=reranker, top_n=rerank_n
-        )
-        _record_stage(
-            "rerank", time.perf_counter() - rerank_start,
-            texts=[rewrite.standard_query or query], items=len(items),
-        )
+        with observation_scope(
+            "span", "rerank-evidence",
+            input={"query": rewrite.standard_query or query,
+                   "candidates": len(candidates), "top_n": rerank_n},
+            metadata={"model": settings.rerank_model},
+        ) as rerank_span:
+            rerank_start = time.perf_counter()
+            items, rerank_score, rerank_degraded = rerank_stage(
+                candidates, rewrite.standard_query or query, reranker=reranker, top_n=rerank_n
+            )
+            _record_stage(
+                "rerank", time.perf_counter() - rerank_start,
+                texts=[rewrite.standard_query or query], items=len(items),
+            )
+            if rerank_span is not None:
+                rerank_span.update(output={
+                    "items": len(items), "top_score": rerank_score,
+                    "degraded": rerank_degraded,
+                })
 
     # 4. 检索侧早拒
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
@@ -202,6 +286,55 @@ def run_expanded_pipeline(
     rerank_top_n: int | None = None,
     rrf_k: int | None = None,
 ) -> RagResult:
+    """公开入口：包一层 retriever observation 后跑 `_run_expanded_pipeline`。"""
+    cleaned = [q.strip()[:_QUERY_MAX_LENGTH] for q in (queries or []) if q and q.strip()]
+    with observation_scope(
+        "retriever",
+        "retrieve-policy-knowledge",
+        input={
+            "queries": cleaned,
+            "resolved_query": (resolved_query or "").strip()[:_QUERY_MAX_LENGTH],
+            "strategy": strategy or settings.rag_strategy,
+        },
+        metadata={
+            "top_k": recall_top_k or settings.recall_top_k,
+            "rerank_top_n": rerank_top_n or settings.rerank_top_n,
+        },
+    ) as span:
+        result = _run_expanded_pipeline(
+            queries,
+            resolved_query,
+            strategy=strategy,
+            filters=filters,
+            embed=embed,
+            milvus=milvus,
+            reranker=reranker,
+            model=model,
+            source_files=source_files,
+            recall_top_k=recall_top_k,
+            rerank_top_n=rerank_top_n,
+            rrf_k=rrf_k,
+        )
+        if span is not None:
+            span.update(output=_retrieval_summary(result))
+        return result
+
+
+def _run_expanded_pipeline(
+    queries: list[str],
+    resolved_query: str,
+    *,
+    strategy: str | None = None,
+    filters: dict[str, str | list[str]] | None = None,
+    embed=None,
+    milvus=None,
+    reranker=None,
+    model=None,
+    source_files: dict[str, str] | None = None,
+    recall_top_k: int | None = None,
+    rerank_top_n: int | None = None,
+    rrf_k: int | None = None,
+) -> RagResult:
     """多查询召回 → 按 chunk id 去重 → 用扩写主查询精排一次 → 单次自评。
 
     精排查询必须是**政策化**的扩写主查询（`cleaned[0]`），不能直接用口语原句：
@@ -232,12 +365,20 @@ def run_expanded_pipeline(
     merged: dict[int, Evidence] = {}
     order: list[int] = []
     for query in cleaned:
-        embed_start = time.perf_counter()
-        dense_vector = embed_query(query, embeddings=embed)
-        _record_stage(
-            "embedding", time.perf_counter() - embed_start,
-            texts=[query], items=1,
-        )
+        with observation_scope(
+            "embedding", "embed-query",
+            input={"query": query},
+            metadata={"queries_in_batch": len(cleaned)},
+            model=settings.embed_model,
+        ) as embedding:
+            embed_start = time.perf_counter()
+            dense_vector = embed_query(query, embeddings=embed)
+            _record_stage(
+                "embedding", time.perf_counter() - embed_start,
+                texts=[query], items=1,
+            )
+            if embedding is not None:
+                embedding.update(output={"dimensions": len(dense_vector or [])})
         candidates = recall(
             chosen, dense_vector=dense_vector, bm25_query=query,
             top_k=top_k, rrf_k=rrf, filters=filters, milvus=milvus,
@@ -255,14 +396,25 @@ def run_expanded_pipeline(
     rerank_score: float | None = None
     items = candidates
     if has_rerank(chosen) and candidates:
-        rerank_start = time.perf_counter()
-        items, rerank_score, rerank_degraded = rerank_stage(
-            candidates, cleaned[0], reranker=reranker, top_n=rerank_n
-        )
-        _record_stage(
-            "rerank", time.perf_counter() - rerank_start,
-            texts=[cleaned[0]], items=len(items),
-        )
+        with observation_scope(
+            "span", "rerank-evidence",
+            input={"query": cleaned[0], "candidates": len(candidates),
+                   "top_n": rerank_n},
+            metadata={"model": settings.rerank_model},
+        ) as rerank_span:
+            rerank_start = time.perf_counter()
+            items, rerank_score, rerank_degraded = rerank_stage(
+                candidates, cleaned[0], reranker=reranker, top_n=rerank_n
+            )
+            _record_stage(
+                "rerank", time.perf_counter() - rerank_start,
+                texts=[cleaned[0]], items=len(items),
+            )
+            if rerank_span is not None:
+                rerank_span.update(output={
+                    "items": len(items), "top_score": rerank_score,
+                    "degraded": rerank_degraded,
+                })
 
     decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
     if decision.refused:

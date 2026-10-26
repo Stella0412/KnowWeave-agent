@@ -744,6 +744,77 @@ wheels = [
 ]
 
 [[package]]
+name = "knowweave"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "aiomysql" },
+    { name = "aiosqlite" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "jieba" },
+    { name = "jsonschema" },
+    { name = "langchain" },
+    { name = "langchain-core" },
+    { name = "langchain-mcp-adapters" },
+    { name = "langchain-openai" },
+    { name = "langchain-text-splitters" },
+    { name = "langfuse" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-sqlite" },
+    { name = "mcp" },
+    { name = "milvus-lite" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pymilvus", extra = ["milvus-lite"] },
+    { name = "python-dotenv" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tiktoken" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiomysql", specifier = ">=0.3.2" },
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "cryptography", specifier = ">=50.0.2" },
+    { name = "fastapi", specifier = ">=0.143.0" },
+    { name = "jieba", specifier = ">=0.42.1" },
+    { name = "jsonschema", specifier = ">=4.25.1" },
+    { name = "langchain", specifier = ">=1,<2" },
+    { name = "langchain-core", specifier = ">=1.6.9" },
+    { name = "langchain-mcp-adapters", specifier = ">=0.3.2" },
+    { name = "langchain-openai", specifier = ">=1.7.0" },
+    { name = "langchain-text-splitters", specifier = ">=0.3.0" },
+    { name = "langfuse", specifier = ">=5,<6" },
+    { name = "langgraph", specifier = ">=1.2.16" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.2" },
+    { name = "mcp", specifier = ">=1.30,<2" },
+    { name = "milvus-lite", specifier = ">=3.2.1" },
+    { name = "pydantic", specifier = ">=2.14.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
+    { name = "pymilvus", extras = ["milvus-lite"], specifier = ">=3.0.2" },
+    { name = "python-dotenv", specifier = ">=1.2.4" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.4" },
+    { name = "tiktoken", specifier = ">=0.14.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+]
+
+[[package]]
 name = "langchain"
 version = "1.4.7"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -833,22 +904,22 @@ wheels = [
 
 [[package]]
 name = "langfuse"
-version = "3.15.0"
+version = "5.0.4"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "backoff" },
     { name = "httpx" },
-    { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "packaging" },
     { name = "pydantic" },
+    { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/be/db/08266f22e1843d4c2743a1d23b7f93828ec6d5f6a4445f7d2ad3074d8b95/langfuse-3.15.0.tar.gz", hash = "sha256:4b6453c82c8159e5f0655ced24b145ed8279b47382a6b4a6d7a57111ef922181", size = 237275, upload-time = "2026-05-21T11:12:59.643Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/75/b3/6694c5edf351a01f85aae48a867fd34979865062cda808630aae86a99768/langfuse-5.0.4.tar.gz", hash = "sha256:f9f13a7a0bf0aad4d75287411cece3172c717d9440e73b4b84255ffffb549c31", size = 367328, upload-time = "2026-10-21T07:36:07.896Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1e/5b/1f16b421f5de996abfb10472d47c72bc829a56cbedacfbf908ebf8cc0469/langfuse-3.15.0-py3-none-any.whl", hash = "sha256:66a3c2b75af9402ffc13690fce73181325d6f78e723463e38844b317d37279ac", size = 424191, upload-time = "2026-05-21T11:12:57.493Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/42/f4/de90215c074ddde1849a60a939f75f9ceaf656c019501b5cac7cdb63b2fc/langfuse-5.0.4-py3-none-any.whl", hash = "sha256:6ab4ddcbc4b33efbd9c7f5feb405bfb0060949e7a170f7410f8fcc52984887a7", size = 637544, upload-time = "2026-10-21T07:36:06.457Z" },
 ]
 
 [[package]]
@@ -972,77 +1043,6 @@ dependencies = [
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ba/93/0142dc84a666daf8ad51a34268f34c12fd6fda4f3810c4be2504eecc8212/mcp-1.30.0.tar.gz", hash = "sha256:445414625fce5c295faa505bb11bacece661ab6f4028d57c935db57820b7a3e4", size = 680511, upload-time = "2026-09-07T14:34:15.845Z" }
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f5/f4/e58bc33317c92a0203664daaf00bf6f41166cc0149e5d6870a03f7cd004a/mcp-1.30.0-py3-none-any.whl", hash = "sha256:666edb5009503e1047c9d60346a756f94b261f05cc2625f23d41c728ffc484d0", size = 234581, upload-time = "2026-09-07T14:34:14.266Z" },
-]
-
-[[package]]
-name = "knowweave"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "aiomysql" },
-    { name = "aiosqlite" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "jieba" },
-    { name = "jsonschema" },
-    { name = "langchain" },
-    { name = "langchain-core" },
-    { name = "langchain-mcp-adapters" },
-    { name = "langchain-openai" },
-    { name = "langchain-text-splitters" },
-    { name = "langfuse" },
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-sqlite" },
-    { name = "mcp" },
-    { name = "milvus-lite" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pymilvus", extra = ["milvus-lite"] },
-    { name = "python-dotenv" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "tiktoken" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "httpx" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiomysql", specifier = ">=0.3.2" },
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "cryptography", specifier = ">=50.0.2" },
-    { name = "fastapi", specifier = ">=0.143.0" },
-    { name = "jieba", specifier = ">=0.42.1" },
-    { name = "jsonschema", specifier = ">=4.25.1" },
-    { name = "langchain", specifier = ">=1,<2" },
-    { name = "langchain-core", specifier = ">=1.6.9" },
-    { name = "langchain-mcp-adapters", specifier = ">=0.3.2" },
-    { name = "langchain-openai", specifier = ">=1.7.0" },
-    { name = "langchain-text-splitters", specifier = ">=0.3.0" },
-    { name = "langfuse", specifier = ">=3,<4" },
-    { name = "langgraph", specifier = ">=1.2.16" },
-    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.2" },
-    { name = "mcp", specifier = ">=1.30,<2" },
-    { name = "milvus-lite", specifier = ">=3.2.1" },
-    { name = "pydantic", specifier = ">=2.14.0" },
-    { name = "pydantic-settings", specifier = ">=2.15.0" },
-    { name = "pymilvus", extras = ["milvus-lite"], specifier = ">=3.0.2" },
-    { name = "python-dotenv", specifier = ">=1.2.4" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.4" },
-    { name = "tiktoken", specifier = ">=0.14.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
 ]
 
 [[package]]

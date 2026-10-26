@@ -178,6 +178,7 @@ class _Prepared:
     turn: TurnContext
     graph_input: dict
     history_count: int
+    user_id: str = "anonymous"
 
 
 @dataclass
@@ -332,18 +333,48 @@ class ChatService:
         if self._turn_metrics_writer is not None:
             await self._turn_metrics_writer.write(payload)
 
-    def _turn_scope(self, conversation_id: int, token: str):
+    def _turn_scope(
+        self, conversation_id: int, token: str, *, message: str,
+        user_id: str = "anonymous", mode: str = "chat",
+    ):
         observer = (
             TurnObserver(self._metrics_handler, token)
             if self._metrics_handler is not None
             else None
         )
         trace = (
-            self._trace_scope(conversation_id)
+            self._trace_scope(
+                conversation_id, message, user_id=user_id, mode=mode,
+            )
             if self._trace_scope is not None
             else nullcontext()
         )
         return observer_scope(observer), trace
+
+    @staticmethod
+    def _finish_trace(root, state, *, payload=None, streamed=None):
+        """把一轮的最终回答写进根 observation（trace 级 input/output 由它派生）。"""
+        if root is None:
+            return
+        try:
+            if payload is not None:
+                actions = _interrupt_actions(payload)
+                prompts = [a.get("prompt") for a in actions if a.get("prompt")]
+                output = prompts[0] if prompts else "等待用户补充信息"
+                status = "interrupted"
+            else:
+                output = (state or {}).get("answer") or streamed or ""
+                status = "ok"
+            root.update(
+                output=[{"role": "assistant", "content": output}],
+                metadata={
+                    "route": (state or {}).get("route"),
+                    "intent": (state or {}).get("intent"),
+                    "status": status,
+                },
+            )
+        except Exception:
+            logger.debug("trace 输出写入失败", exc_info=True)
 
     async def shutdown(self) -> None:
         if self._summary_service is not None:
@@ -404,11 +435,14 @@ class ChatService:
                 conversation_id = await repo.create_conversation()
                 await session.commit()
                 created = True
+                user_id = "anonymous"
             else:
                 conversation_id = int(session_id)
                 created = False
-                if await repo.get_conversation(conversation_id) is None:
+                conversation = await repo.get_conversation(conversation_id)
+                if conversation is None:
                     raise ValueError("会话不存在")
+                user_id = conversation.user_id or "anonymous"
             user_row = await repo.add_message(conversation_id, role="user", content=message)
             await repo.touch_conversation(conversation_id)
             await session.commit()
@@ -442,7 +476,7 @@ class ChatService:
 
         graph_input = {
             "messages": input_messages,
-            "user_id": "anonymous",
+            "user_id": user_id,
             "conversation_id": conversation_id,
             "turn_user_msg_id": new_user_id,
             "context_meta": {},
@@ -491,6 +525,7 @@ class ChatService:
             turn=turn,
             graph_input=graph_input,
             history_count=history_count,
+            user_id=user_id,
         )
 
     async def _persist_new(
@@ -617,15 +652,21 @@ class ChatService:
             config = run.config
             context = self._context(prepared.turn, run.token)
             observer_cm, trace_cm = self._turn_scope(
-                prepared.conversation_id, run.token
+                prepared.conversation_id, run.token, message=message,
+                user_id=prepared.user_id, mode="stream",
             )
-            with observer_cm, trace_cm:
+            with observer_cm, trace_cm as root:
+                streamed: list[str] = []
                 async for event in self._events(prepared.graph_input, config, context):
+                    if event.get("type") == "token":
+                        streamed.append(event.get("content") or "")
                     yield event
-
-            snapshot = await self._graph.aget_state(config)
-            state = dict(snapshot.values or {}) if snapshot else {}
-            payload = _interrupt_value(snapshot)
+                snapshot = await self._graph.aget_state(config)
+                state = dict(snapshot.values or {}) if snapshot else {}
+                payload = _interrupt_value(snapshot)
+                self._finish_trace(
+                    root, state, payload=payload, streamed="".join(streamed),
+                )
             if payload is not None:
                 actions = _interrupt_actions(payload)
                 kinds = [a.get("type") for a in actions]
@@ -691,19 +732,21 @@ class ChatService:
             config = run.config
             context = self._context(prepared.turn, run.token)
             observer_cm, trace_cm = self._turn_scope(
-                prepared.conversation_id, run.token
+                prepared.conversation_id, run.token, message=message,
+                user_id=prepared.user_id, mode="agent",
             )
-            with observer_cm, trace_cm:
+            with observer_cm, trace_cm as root:
                 state = await self._graph.ainvoke(
                     prepared.graph_input,
                     config=config,
                     context=context,
                 )
-            state = dict(state or {})
-            payload = _interrupt_from_result(state)
-            if payload is None:
-                snapshot = await self._graph.aget_state(config)
-                payload = _interrupt_value(snapshot)
+                state = dict(state or {})
+                payload = _interrupt_from_result(state)
+                if payload is None:
+                    snapshot = await self._graph.aget_state(config)
+                    payload = _interrupt_value(snapshot)
+                self._finish_trace(root, state, payload=payload)
             if payload is not None:
                 status = "ok"
                 return {
@@ -811,15 +854,24 @@ class ChatService:
             run = self._start_turn(conversation_id)
             config = run.config
             context = self._context(turn, run.token)
-            observer_cm, trace_cm = self._turn_scope(conversation_id, run.token)
-            with observer_cm, trace_cm:
+            observer_cm, trace_cm = self._turn_scope(
+                conversation_id, run.token, message=f"选择订单 {order_no}",
+                mode="stream-resume",
+            )
+            with observer_cm, trace_cm as root:
+                streamed: list[str] = []
                 async for event in self._events(
                     Command(resume={"order_no": order_no}), config, context
                 ):
+                    if event.get("type") == "token":
+                        streamed.append(event.get("content") or "")
                     yield event
-            snapshot = await self._graph.aget_state(config)
-            state = dict(snapshot.values or {}) if snapshot else {}
-            payload = _interrupt_value(snapshot)
+                snapshot = await self._graph.aget_state(config)
+                state = dict(snapshot.values or {}) if snapshot else {}
+                payload = _interrupt_value(snapshot)
+                self._finish_trace(
+                    root, state, payload=payload, streamed="".join(streamed),
+                )
             if payload is not None:
                 for action in _interrupt_actions(payload):
                     yield {"type": "actions", "items": [action]}
@@ -886,18 +938,22 @@ class ChatService:
             run = self._start_turn(conversation_id)
             config = run.config
             context = self._context(turn, run.token)
-            observer_cm, trace_cm = self._turn_scope(conversation_id, run.token)
-            with observer_cm, trace_cm:
+            observer_cm, trace_cm = self._turn_scope(
+                conversation_id, run.token, message=f"选择订单 {order_no}",
+                mode="agent-resume",
+            )
+            with observer_cm, trace_cm as root:
                 state = await self._graph.ainvoke(
                     Command(resume={"order_no": order_no}),
                     config=config,
                     context=context,
                 )
-            state = dict(state or {})
-            payload = _interrupt_from_result(state)
-            if payload is None:
-                snapshot = await self._graph.aget_state(config)
-                payload = _interrupt_value(snapshot)
+                state = dict(state or {})
+                payload = _interrupt_from_result(state)
+                if payload is None:
+                    snapshot = await self._graph.aget_state(config)
+                    payload = _interrupt_value(snapshot)
+                self._finish_trace(root, state, payload=payload)
             if payload is not None:
                 status = "ok"
                 return {
@@ -994,16 +1050,26 @@ class ChatService:
             )
             history_count = len(messages)
             context = self._context(turn, run.token)
-            observer_cm, trace_cm = self._turn_scope(conversation_id, run.token)
-            with observer_cm, trace_cm:
+            observer_cm, trace_cm = self._turn_scope(
+                conversation_id, run.token,
+                message=f"工单确认 {decision} {confirmation_id}",
+                mode="stream-ticket-resume",
+            )
+            with observer_cm, trace_cm as root:
+                streamed: list[str] = []
                 async for event in self._events(
                     Command(resume={"decision": decision, "confirmation_id": confirmation_id}),
                     config, context,
                 ):
+                    if event.get("type") == "token":
+                        streamed.append(event.get("content") or "")
                     yield event
-            snapshot = await self._graph.aget_state(config)
-            state = dict(snapshot.values or {}) if snapshot else {}
-            payload = _interrupt_value(snapshot)
+                snapshot = await self._graph.aget_state(config)
+                state = dict(snapshot.values or {}) if snapshot else {}
+                payload = _interrupt_value(snapshot)
+                self._finish_trace(
+                    root, state, payload=payload, streamed="".join(streamed),
+                )
             if payload is not None:
                 for action in _interrupt_actions(payload):
                     yield {"type": "actions", "items": [action]}

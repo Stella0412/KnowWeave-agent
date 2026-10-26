@@ -25,7 +25,7 @@ class FakeClient:
         self.span = FakeSpan()
         self.calls = []
 
-    def start_span(self, **kwargs):
+    def start_observation(self, **kwargs):
         self.calls.append(kwargs)
         return self.span
 
@@ -47,6 +47,7 @@ async def test_tool_span_success_and_failure():
     with tool_span(client, "demo", input={"x": "y"}, metadata={"turn_token": "t"}) as span:
         span.update(output="ok", level="DEFAULT")
     assert client.calls[0]["name"] == "demo"
+    assert client.calls[0]["as_type"] == "tool"
     assert client.span.ended is True
 
     client2 = FakeClient()

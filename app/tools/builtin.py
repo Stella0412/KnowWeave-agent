@@ -108,7 +108,12 @@ async def _query_faq(arguments, context):
     from app.tools.business import build_query_faq
 
     tool = build_query_faq(context.session_factory, context.turn)
-    text = await tool.ainvoke(arguments)
+    # 执行器已经为这次调用开了 tool observation；直接跑底层协程，避免 LangChain
+    # 按当前 config 再生成一个同名的 tool span，导致一次调用出现两条 trace。
+    if tool.coroutine is not None:
+        text = await tool.coroutine(**arguments)
+    else:
+        text = await tool.ainvoke(arguments)
     return ToolOutcome("success", data=None, message=text)
 
 

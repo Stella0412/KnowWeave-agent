@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     log_file: str = "log/app.log"
 
     # ch09 观测
+    app_env: str = "development"  # Langfuse environment（production/staging/development）
+    app_release: str = "0.1.0"  # Langfuse release；发布时用 APP_RELEASE 覆盖
     langfuse_base_url: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
