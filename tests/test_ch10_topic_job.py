@@ -73,6 +73,30 @@ async def test_rejects_unknown_label_without_writing(session_factory):
         assert (await TopicRepository(session).coverage())["classified_roots"] == 0
 
 
+class CappedClient:
+    def __init__(self, cap):
+        self.cap = cap
+        self.calls = []
+
+    async def classify(self, texts):
+        self.calls.append(len(texts))
+        if len(texts) > self.cap:
+            raise AssertionError(f"请求超过服务上限: {len(texts)} > {self.cap}")
+        return {"model_version": "test", "results": [
+            [{"label": "其他", "score": 0.9}] for _ in texts
+        ]}
+
+
+async def test_reclassify_all_chunks_requests_within_service_cap(session_factory):
+    await _seed(session_factory, 130)
+    client = CappedClient(128)
+    result = await run_classify(session_factory, client, batch_size=20, reclassify_all=True)
+    assert result["classified"] == 130
+    assert client.calls and max(client.calls) <= 128
+    async with session_factory() as session:
+        assert (await TopicRepository(session).coverage())["classified_roots"] == 130
+
+
 async def test_dry_run_does_not_write(session_factory):
     await _seed(session_factory, 25)
     result = await run_classify(session_factory, FakeClient(), batch_size=20, dry_run=True)

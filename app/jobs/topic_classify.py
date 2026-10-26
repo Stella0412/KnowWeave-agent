@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.engine import SessionFactory, engine
 from app.db.repository import TopicRepository
 
+_MAX_TEXTS_PER_REQUEST = 128
 _TAXONOMY_PATH = Path(__file__).resolve().parents[2] / "config" / "ch10_taxonomy.json"
 _KNOWN_LABELS = frozenset(
     item["name"]
@@ -66,26 +67,31 @@ async def run_classify(session_factory, client, *, batch_size=20, limit=None,
         if not roots or (not explicit and len(roots) < batch_size):
             return {"selected": len(roots), "classified": 0, "skipped": True,
                     "dry_run": False, "batch_size": batch_size}
-        response = await client.classify([row.raw_question for row in roots])
-        results = response.get("results") or []
-        if len(results) != len(roots):
-            raise RuntimeError(f"服务返回条数不匹配: {len(results)} != {len(roots)}")
+        chunk_size = max(1, min(batch_size or _MAX_TEXTS_PER_REQUEST, _MAX_TEXTS_PER_REQUEST))
         pairs = []
         counts = Counter()
-        for row, items in zip(roots, results):
-            labels = [item["label"] for item in items]
-            if not labels:
-                raise ValueError(f"问题 {row.id} 没有返回任何标签")
-            unknown = [label for label in labels if label not in _KNOWN_LABELS]
-            if unknown:
-                raise ValueError(f"问题 {row.id} 返回了 17 类之外的标签: {unknown}")
-            pairs.append((row.id, labels))
-            counts.update(labels)
+        model_version = None
+        for start in range(0, len(roots), chunk_size):
+            chunk = roots[start:start + chunk_size]
+            response = await client.classify([row.raw_question for row in chunk])
+            model_version = response.get("model_version") or model_version
+            results = response.get("results") or []
+            if len(results) != len(chunk):
+                raise RuntimeError(f"服务返回条数不匹配: {len(results)} != {len(chunk)}")
+            for row, items in zip(chunk, results):
+                labels = [item["label"] for item in items]
+                if not labels:
+                    raise ValueError(f"问题 {row.id} 没有返回任何标签")
+                unknown = [label for label in labels if label not in _KNOWN_LABELS]
+                if unknown:
+                    raise ValueError(f"问题 {row.id} 返回了 17 类之外的标签: {unknown}")
+                pairs.append((row.id, labels))
+                counts.update(labels)
         await repo.upsert_many(pairs)
         await session.commit()
         return {
             "selected": len(roots), "classified": len(pairs), "skipped": False,
-            "dry_run": False, "model_version": response.get("model_version"),
+            "dry_run": False, "model_version": model_version,
             "labels": dict(counts),
         }
 
