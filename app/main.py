@@ -23,7 +23,10 @@ from app.graph.runtime import open_checkpointer
 from app.observability.metrics import TurnMetricsWriter
 from app.observability.spans import tool_span
 from app.observability.wiring import build_observability
-from app.routers import chat, conversations, extract, feedback, observability, rag_eval, review
+from app.routers import (
+    chat, conversations, extract, feedback, observability, rag_eval, review, topics,
+)
+from app.services.topic_admin_service import TopicAdminService
 from app.services.chat_service import build_chat_service
 from app.services.context_manager import log_startup_budget
 from app.services.feedback_service import FeedbackService
@@ -116,6 +119,7 @@ async def lifespan(app: FastAPI):
         app.state.observability_service = ObservabilityService(
             SessionFactory, settings,
         )
+        app.state.topic_admin = TopicAdminService(SessionFactory)
         try:
             yield
         finally:
@@ -135,6 +139,7 @@ app.include_router(rag_eval.router)
 app.include_router(feedback.router)
 app.include_router(review.router)
 app.include_router(observability.router)
+app.include_router(topics.router)
 
 
 @app.get("/", include_in_schema=False)
