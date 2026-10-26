@@ -26,6 +26,7 @@ from app.db.models import (
     Ticket,
     TicketStatus,
     TicketType,
+    TopicClassification,
     TurnMetrics,
     VectorizeStatus,
 )
@@ -788,3 +789,160 @@ class RefundRepository:
         self._session.add(row)
         await self._session.flush()
         return row
+
+
+class TopicRepository:
+    """ch10 主题分类结果读写与聚合。聚合在 Python 侧做，兼容 SQLite/MySQL。"""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def list_unclassified_roots(
+        self, limit: int | None = None,
+    ) -> list[LowConfidenceQuestion]:
+        stmt = (
+            select(LowConfidenceQuestion)
+            .outerjoin(
+                TopicClassification,
+                TopicClassification.question_id == LowConfidenceQuestion.id,
+            )
+            .where(
+                LowConfidenceQuestion.merged_into_id.is_(None),
+                TopicClassification.id.is_(None),
+            )
+            .order_by(LowConfidenceQuestion.id)
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def list_roots_by_ids(self, ids: list[int]) -> list[LowConfidenceQuestion]:
+        if not ids:
+            return []
+        stmt = (
+            select(LowConfidenceQuestion)
+            .where(
+                LowConfidenceQuestion.id.in_(ids),
+                LowConfidenceQuestion.merged_into_id.is_(None),
+            )
+            .order_by(LowConfidenceQuestion.id)
+        )
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def upsert_many(self, rows) -> int:
+        pairs = [(int(qid), list(labels)) for qid, labels in rows]
+        if not pairs:
+            return 0
+        ids = [qid for qid, _ in pairs]
+        existing = {
+            row.question_id: row
+            for row in (
+                await self._session.execute(
+                    select(TopicClassification).where(
+                        TopicClassification.question_id.in_(ids)
+                    )
+                )
+            ).scalars()
+        }
+        now = datetime.now()
+        for qid, labels in pairs:
+            row = existing.get(qid)
+            if row is None:
+                self._session.add(TopicClassification(
+                    question_id=qid, labels=labels, classified_at=now,
+                ))
+            else:
+                row.labels = labels
+                row.classified_at = now
+        await self._session.flush()
+        return len(pairs)
+
+    async def _classified_rows(self, since=None):
+        stmt = select(TopicClassification, LowConfidenceQuestion.duplicate_count).join(
+            LowConfidenceQuestion,
+            LowConfidenceQuestion.id == TopicClassification.question_id,
+        )
+        if since is not None:
+            stmt = stmt.where(TopicClassification.classified_at >= since)
+        return list((await self._session.execute(stmt)).all())
+
+    async def distribution(self, *, names, since=None, weighted: bool = False) -> dict:
+        rows = await self._classified_rows(since)
+        counts = {name: 0 for name in names}
+        weights = {name: 0 for name in names}
+        total_weighted = 0
+        for topic, duplicate_count in rows:
+            duplicate_count = int(duplicate_count or 1)
+            total_weighted += duplicate_count
+            for label in topic.labels or []:
+                if label in counts:
+                    counts[label] += 1
+                    weights[label] += duplicate_count
+        chosen = weights if weighted else counts
+        total = total_weighted if weighted else len(rows)
+        labels = [
+            {
+                "label": name,
+                "count": chosen[name],
+                "share": round(chosen[name] / total, 4) if total else 0.0,
+            }
+            for name in names
+        ]
+        labels.sort(key=lambda item: (-item["count"], names.index(item["label"])))
+        return {
+            "total_roots": len(rows),
+            "total_weighted": total_weighted,
+            "labels": labels,
+            "since": since.isoformat(timespec="seconds") if since else None,
+            "weighted": weighted,
+        }
+
+    async def questions_by_label(self, label: str, limit: int = 20) -> list[dict]:
+        rows = await self._classified_rows()
+        out = []
+        for topic, duplicate_count in rows:
+            if label not in (topic.labels or []):
+                continue
+            question = await self._session.get(LowConfidenceQuestion, topic.question_id)
+            if question is None:
+                continue
+            out.append({
+                "question_id": topic.question_id,
+                "raw_question": question.raw_question,
+                "labels": list(topic.labels or []),
+                "duplicate_count": int(duplicate_count or 1),
+                "classified_at": topic.classified_at.isoformat(timespec="seconds"),
+            })
+            if len(out) >= limit:
+                break
+        return out
+
+    async def coverage(self) -> dict:
+        total = int((await self._session.execute(
+            select(func.count()).select_from(LowConfidenceQuestion).where(
+                LowConfidenceQuestion.merged_into_id.is_(None)
+            )
+        )).scalar() or 0)
+        classified = int((await self._session.execute(
+            select(func.count()).select_from(TopicClassification)
+        )).scalar() or 0)
+        last = (await self._session.execute(
+            select(func.max(TopicClassification.classified_at))
+        )).scalar()
+        return {
+            "total_roots": total,
+            "classified_roots": classified,
+            "unclassified_roots": max(0, total - classified),
+            "last_classified_at": last.isoformat(timespec="seconds") if last else None,
+        }
+
+    async def combos(self, *, since=None, top_n: int = 10) -> list[dict]:
+        rows = await self._classified_rows(since)
+        counter: dict[tuple[str, ...], int] = {}
+        for topic, _ in rows:
+            labels = tuple(topic.labels or [])
+            if len(labels) > 1:
+                key = tuple(sorted(labels))
+                counter[key] = counter.get(key, 0) + 1
+        ordered = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:top_n]
+        return [{"labels": list(key), "count": count} for key, count in ordered]

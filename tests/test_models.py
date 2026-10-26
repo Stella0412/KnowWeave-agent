@@ -31,6 +31,7 @@ def test_tables_registered():
         "tool_audit_logs",
         "answer_feedback",
         "turn_metrics",
+        "topic_classifications",
     }
 
 

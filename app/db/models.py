@@ -442,3 +442,21 @@ class ToolAuditLog(Base):
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TopicClassification(Base):
+    """ch10 旁路主题归类结果：一个根问题一行，labels 为 17 类中的命中项。"""
+
+    __tablename__ = "topic_classifications"
+    __table_args__ = (
+        UniqueConstraint("question_id", name="uk_question_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    question_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("low_confidence_questions.id"), nullable=False
+    )
+    labels: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    classified_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
