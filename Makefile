@@ -10,7 +10,7 @@ else
 DOCKER ?= docker
 endif
 
-.PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live test
+.PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live test topic-audit topic-train topic-tune topic-eval topic-export topic-serve topic-classify topic-smoke
 
 dev:
 	$(PY) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
@@ -56,3 +56,28 @@ eval-live:
 
 test:
 	$(PY) -m pytest -q
+
+# ch10 主题分类器
+topic-audit:
+	$(PYML) -m ml.dataset_audit --root ch10-dataset
+
+topic-train:
+	$(PYML) -m ml.train --train ch10-dataset/train.jsonl --val ch10-dataset/val.jsonl --output-dir data/ch10/model --epochs 4
+
+topic-tune:
+	$(PYML) -m ml.tune --model-dir data/ch10/model/latest.txt --val ch10-dataset/val.jsonl
+
+topic-eval:
+	$(PYML) -m eval.eval_ch10_topic --model-dir data/ch10/model/latest.txt
+
+topic-export:
+	$(PYML) -m ml.export_onnx --model-dir data/ch10/model/latest.txt --promote-current data/ch10/model/current
+
+topic-serve:
+	$(PYML) -m uvicorn ml.service.app:app --host 127.0.0.1 --port 8200
+
+topic-classify:
+	$(PY) -m app.jobs.topic_classify $(ARGS)
+
+topic-smoke:
+	$(PY) -m ml.service.smoke $(ARGS)
