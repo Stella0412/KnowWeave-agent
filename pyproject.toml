@@ -34,6 +34,16 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+ml = [
+    "torch>=2.14",
+    "transformers>=5",
+    "scikit-learn>=1.7",
+    "accelerate>=1",
+    "onnx>=1.20",
+    "onnxruntime>=1.25",
+    "tokenizers>=0.22",
+    "httpx>=0.28",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

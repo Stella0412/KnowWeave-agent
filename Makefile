@@ -1,3 +1,6 @@
+# 宿主 UV_CACHE_DIR 值带引号会让 uv 失败；项目内统一修正
+export UV_CACHE_DIR := D:/caches/uv
+PYML := uv run --group ml python
 PY := uv run python
 # Windows 下 PATH 里的 make 可能是 Cygwin 版，无法执行 Docker Desktop 的 sh shim；
 # 直接调用 docker.exe 可兼容（其他平台仍用 docker）。

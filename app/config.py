@@ -131,5 +131,12 @@ class Settings(BaseSettings):
     low_conf_merge_limit: int = 2000
     low_conf_merge_batch_size: int = 64
 
+    # ch10 旁路主题分类（服务地址与批量参数；无密钥）
+    topic_service_url: str = "http://127.0.0.1:8200"
+    topic_batch_size: int = 20
+    topic_model_dir: str = "data/ch10/model/current"
+    topic_max_batch: int = 128
+    topic_onnx_threads: int = 0
+
 
 settings = Settings()
