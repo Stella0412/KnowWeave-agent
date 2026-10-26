@@ -6,10 +6,12 @@ import logging
 import threading
 import time
 
+from langchain_core.callbacks import BaseCallbackHandler
+
 logger = logging.getLogger(__name__)
 
 
-class TurnMetricsHandler:
+class TurnMetricsHandler(BaseCallbackHandler):
     def __init__(self, *, prices, counter, trace_id_provider=None):
         self._prices = prices
         self._counter = counter
@@ -74,8 +76,10 @@ class TurnMetricsHandler:
         token = self._token_from(metadata, parent_run_id)
         if token is None:
             return
+        kwargs = (serialized or {}).get("kwargs", {}) or {}
         model = (
-            (serialized or {}).get("kwargs", {}).get("model")
+            kwargs.get("model")
+            or kwargs.get("model_name")
             or (serialized or {}).get("name")
             or "unknown"
         )

@@ -1,4 +1,11 @@
 PY := uv run python
+# Windows 下 PATH 里的 make 可能是 Cygwin 版，无法执行 Docker Desktop 的 sh shim；
+# 直接调用 docker.exe 可兼容（其他平台仍用 docker）。
+ifeq ($(OS),Windows_NT)
+DOCKER ?= docker.exe
+else
+DOCKER ?= docker
+endif
 
 .PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live test
 
@@ -9,7 +16,7 @@ langfuse-env:
 	$(PY) -m app.jobs.init_langfuse_env
 
 langfuse-up: langfuse-env
-	docker compose -f docker-compose.langfuse.yml up -d
+	$(DOCKER) compose -f docker-compose.langfuse.yml up -d
 	@echo "Langfuse: http://localhost:3000（首次启动约 1-2 分钟，等待 health 通过）"
 	@$(MAKE) --no-print-directory langfuse-wait
 
@@ -21,10 +28,10 @@ langfuse-wait:
 	done; echo "Langfuse 已就绪"
 
 langfuse-down:
-	docker compose -f docker-compose.langfuse.yml down
+	$(DOCKER) compose -f docker-compose.langfuse.yml down
 
 langfuse-logs:
-	docker compose -f docker-compose.langfuse.yml logs -f --tail=100
+	$(DOCKER) compose -f docker-compose.langfuse.yml logs -f --tail=100
 
 langfuse-status:
 	@curl -fsS http://localhost:3000/api/public/health && echo

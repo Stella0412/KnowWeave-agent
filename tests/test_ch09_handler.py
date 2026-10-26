@@ -1,3 +1,4 @@
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
@@ -150,3 +151,32 @@ def test_llm_output_token_usage_fallback():
     assert snap["completion_tokens"] == 3
     assert snap["total_tokens"] == 10
     assert snap["usage_estimated"] is False
+
+
+def test_handler_is_langchain_callback_compatible():
+    """回调管理器直接读取 run_inline/raise_error，裸 handler 会让每轮对话 500。"""
+    handler = _handler()
+    assert isinstance(handler, BaseCallbackHandler)
+    assert handler.run_inline is False
+    assert handler.raise_error is False
+
+
+def test_chat_openai_model_name_is_attributed_and_priced():
+    handler = _handler()
+    handler.on_chat_model_start(
+        {"name": "ChatOpenAI", "kwargs": {"model_name": "m"}},
+        [[AIMessage(content="问")]],
+        run_id="llm", metadata={"turn_token": "t"},
+    )
+    handler.on_llm_end(
+        LLMResult(generations=[[ChatGeneration(
+            message=AIMessage(content="答", usage_metadata={
+                "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+            })
+        )]]),
+        run_id="llm",
+    )
+    snap = handler.finish_turn("t")
+    assert list(snap["model_usage"]) == ["m"]
+    assert snap["cost_cny"] == 0.00002
+    assert snap["unpriced_models"] == []

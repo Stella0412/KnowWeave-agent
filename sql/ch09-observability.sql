@@ -37,4 +37,4 @@ CREATE TABLE turn_metrics (
 
 ALTER TABLE tool_audit_logs
   ADD COLUMN turn_token VARCHAR(64) NULL AFTER conversation_id,
-  ADD COLUMN KEY idx_turn_token (turn_token);
+  ADD KEY idx_turn_token (turn_token);
