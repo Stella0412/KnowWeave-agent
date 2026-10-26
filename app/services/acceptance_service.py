@@ -100,6 +100,8 @@ class AcceptanceService:
             },
         ]
         splits = dataset.get("splits") or {}
+        raw_labels = (dataset.get("totals") or {}).get("labels", 0)
+        label_count = len(raw_labels) if isinstance(raw_labels, dict) else int(raw_labels or 0)
         return {
             "ready": bool(payload),
             "generated_at": meta.get("generated_at"),
@@ -116,7 +118,7 @@ class AcceptanceService:
                 "val": splits.get("val", {}).get("rows", 0),
                 "test": splits.get("test", {}).get("rows", 0),
                 "multi_label": (dataset.get("totals") or {}).get("multi_label", 0),
-                "labels": (dataset.get("totals") or {}).get("labels", 0),
+                "labels": label_count,
             },
             "test": {
                 "total": metrics.get("total", 0),

@@ -14,10 +14,16 @@ def _write(path, payload):
 
 
 def _fixture(tmp_path):
+    names = [
+        item["name"]
+        for item in json.loads(
+            Path("config/ch10_taxonomy.json").read_text(encoding="utf-8")
+        )["labels"]
+    ]
     dataset = tmp_path / "dataset"
     _write(dataset / "manifest.json", {
         "splits": {"train": {"rows": 10}, "val": {"rows": 2}, "test": {"rows": 2}},
-        "totals": {"labels": 17, "multi_label": 3},
+        "totals": {"labels": {name: 1 for name in names}, "multi_label": 3},
     })
     model = tmp_path / "model"
     run = model / "run-1"
@@ -27,12 +33,6 @@ def _fixture(tmp_path):
     _write(model / "current" / "export_manifest.json", {
         "opset": 17, "max_abs_diff": 0.0001,
     })
-    names = [
-        item["name"]
-        for item in json.loads(
-            Path("config/ch10_taxonomy.json").read_text(encoding="utf-8")
-        )["labels"]
-    ]
     per_class = {name: {"support": 0, "f1": 0.0} for name in names}
     per_class["退换货"] = {"support": 1, "f1": 0.8}
     evaldir = tmp_path / "eval"
@@ -60,6 +60,7 @@ def test_overview_reports_metrics_and_checks(tmp_path):
     assert overview["ready"] is True
     assert overview["test"]["macro_f1"] == 0.8
     assert overview["model"]["run"] == "run-1"
+    assert overview["dataset"]["labels"] == 17
     checks = {item["name"]: item["ok"] for item in overview["checks"]}
     assert checks["测试集指标"] is True
     assert checks["ONNX 对齐"] is True

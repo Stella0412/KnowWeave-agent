@@ -10,7 +10,7 @@ from typing import Protocol
 import httpx
 
 from app.config import settings
-from app.db.engine import SessionFactory
+from app.db.engine import SessionFactory, engine
 from app.db.repository import TopicRepository
 
 
@@ -91,12 +91,15 @@ def parse_args(argv=None):
 
 
 async def _main(args):
-    result = await run_classify(
-        SessionFactory, HttpTopicClient(args.service_url),
-        batch_size=args.batch_size, limit=args.limit, dry_run=args.dry_run,
-        reclassify_all=args.reclassify_all, question_ids=args.question_id,
-        exclude_patterns=tuple(args.exclude_pattern),
-    )
+    try:
+        result = await run_classify(
+            SessionFactory, HttpTopicClient(args.service_url),
+            batch_size=args.batch_size, limit=args.limit, dry_run=args.dry_run,
+            reclassify_all=args.reclassify_all, question_ids=args.question_id,
+            exclude_patterns=tuple(args.exclude_pattern),
+        )
+    finally:
+        await engine.dispose()
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
