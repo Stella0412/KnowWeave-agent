@@ -198,7 +198,7 @@ make topic-classify ARGS="--reclassify-all --exclude-pattern 第九章闭环测�
 | 真实池批量归类 + 后台分布页计数 | 11 条真实根问题入库；`/topics` 显示 17 类计数与组合 |
 | 单句多意图 | `买大了想退` 同时命中 `退换货` 与 `尺码` |
 
-回归：默认套件 `852 passed, 7 skipped`；ML 套件见下节命令。`python -m compileall -q app ml tests eval`
+回归：默认套件 `853 passed, 7 skipped`；ML 套件 `43 passed`。`python -m compileall -q app ml tests eval`
 无错误。
 
 ## 10. 复现命令

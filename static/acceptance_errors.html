@@ -42,8 +42,8 @@
   <div id="error"></div>
   <section>
     <table>
-      <thead><tr><th>ID</th><th>原文</th><th>真实标签</th><th>预测标签</th><th>类型</th><th>涉及类目</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+      <thead><tr><th>ID</th><th>原文</th><th>真实标签</th><th>预测标签</th><th>类型</th><th>涉及类目</th><th>复核结论</th><th>备注</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
     </table>
   </section>
 </main>
@@ -84,7 +84,7 @@ async function load() {
     if (!data.errors.length) {
       const tr = document.createElement("tr");
       const td = text("td", "暂无错例 CSV：先运行评测。", "muted");
-      td.colSpan = 6;
+      td.colSpan = 8;
       tr.append(td);
       body.append(tr);
       return;
@@ -98,6 +98,8 @@ async function load() {
         labelsCell(item.pred, "（空）"),
         text("td", item.error_type, item.error_type === "FN" ? "fn" : "fp"),
         text("td", item.label),
+        text("td", item.verdict || "待复核", "muted"),
+        text("td", item.notes || "", "muted"),
       );
       body.append(tr);
     }
