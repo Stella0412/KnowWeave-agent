@@ -10,7 +10,7 @@ else
 DOCKER ?= docker
 endif
 
-.PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live test topic-audit topic-train topic-tune topic-eval topic-export topic-serve topic-classify topic-smoke
+.PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live cost-report test topic-audit topic-train topic-tune topic-eval topic-export topic-serve topic-classify topic-smoke
 
 dev:
 	$(PY) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
@@ -53,6 +53,10 @@ eval-merge:
 
 eval-live:
 	CH09_LIVE=1 $(PY) -m pytest -q tests/test_ch09_live.py
+
+# 意图成本账：产物落 data/cost_report/latest.json，页面只读产物
+cost-report:
+	$(PY) -m app.jobs.cost_report $(if $(ARGS),$(ARGS),--days 7)
 
 test:
 	$(PY) -m pytest -q

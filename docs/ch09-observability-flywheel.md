@@ -122,6 +122,21 @@ Milvus Lite 是**单进程独占锁**：审核页补答时应用与 CLI 不能�
   `error_rate = (error + cancelled) / turns`（`interrupted` 单独展示，不计入错误率）；`satisfaction.rate =
   up/(up+down)`，分母为 0 显示「—」；P50/P95 只对非 NULL 值计算；窗口最多取最近 5000 行近似。
 
+### 6.1 意图成本账（Langfuse）
+
+- **标签**：`IntentTaggingCallbackHandler` 在 `classify_intent` 结束后把 `intent:<x>` 合并进此后创建的观测的
+  `langfuse.trace.tags`（链、生成、工具与当轮根 span `handle-chat-turn` 都带）；分类之前的指代消解与分类调用
+  不带标签。口径是**只统计意图确定之后的开销**，分类前的花销单列「意图未定」，不摊进任何意图。
+- **数据源**：Langfuse v2 Metrics API（`GET /api/public/v2/metrics`，`observations` 视图）按 `tags` 分组取
+  `totalTokens`/`totalCost`；请求数取观测名 `handle-chat-turn` 的 `count`（一轮一个根 span）；按
+  `environment` 过滤只算当前环境。v4 events_only 模式的 `traces` 视图不可用，不能按 trace 直接计数。
+- **产物与重跑**：产物落 `data/cost_report/latest.json`（`data/*` 已忽略）。页面只读产物、不直连 Langfuse；
+  重跑走页面按钮（`POST /observability/api/cost-report/rerun`，窗口 1/7/30，默认 7 天）或
+  `make cost-report ARGS="--days 7"`。
+- **成本来源**：金额是 Langfuse 在 ingestion 时按模型定义（`POST /api/public/models` 的 `pricingTiers`）
+  算出的值；模型没定价、或 trace 在定价前入库，成本就是 0。本地 `config/model_prices.json` 的 `null`
+  不影响账本，但页面上方「模型用量与成本」仍会显示 0 成本。
+
 ## 7. Langfuse 启动/关闭与版本配对
 
 - 启动：`make langfuse-up`（先 `langfuse-env` 补齐缺失本地密钥，再 `docker compose -f docker-compose.langfuse.yml up -d`，
@@ -152,7 +167,7 @@ Milvus Lite 是**单进程独占锁**：审核页补答时应用与 CLI 不能�
 
 ```bash
 uv run pytest tests/test_ch09_live.py -q     # 默认 skip，预期 1 skipped
-uv run pytest -q                             # 全量回归，预期 807 passed / 7 skipped
+uv run pytest -q                             # 全量回归，预期 872 passed / 7 skipped
 uv run python -m compileall app tests eval   # 语法编译全通过
 make test                                    # 与 uv run pytest -q 同一套件
 ```
@@ -175,6 +190,7 @@ make merge ARGS="--dry-run"   # 先看计划，不写库
 make merge                    # 确认后真正回填指纹并归并
 make langfuse-up              # 起观测栈
 make dev                      # 起应用
+make cost-report              # 意图成本账产物（也可在观测页点「在页面上重跑」）
 ```
 
 ### 9.1 A/B/C/D 页面清单（spec §14.2）与批处理门禁（spec §14.3）

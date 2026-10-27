@@ -27,6 +27,23 @@
     .error-banner { background: #fdecea; color: #b42318; border: 1px solid #f5c2c0; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
     footer ul.notes { list-style: none; padding: 0; margin: 8px auto 0; max-width: 900px; text-align: left; }
     footer ul.notes li { margin: 2px 0; }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+    .section-head h2 { margin: 0; }
+    .badge { display: inline-block; font-size: 11px; font-weight: 500; color: #2f66e0; background: #eef3ff; border: 1px solid #c9d9ff; border-radius: 999px; padding: 1px 8px; margin-left: 6px; vertical-align: middle; }
+    .muted { color: #667085; font-size: 12px; }
+    .hint { color: #667085; font-size: 13px; margin: 0 0 12px; }
+    .bars { margin: 16px 0; display: grid; gap: 10px; }
+    .bar-row { display: grid; grid-template-columns: 88px 1fr; gap: 4px 12px; align-items: center; }
+    .bar-label { font-size: 13px; font-weight: 500; }
+    .bar-meta { grid-column: 2; color: #667085; font-size: 12px; }
+    .bar-track { height: 10px; background: #f0f2f5; border-radius: 999px; overflow: hidden; }
+    .bar-fill { height: 100%; background: #5b8cff; border-radius: 999px; }
+    .row-muted td { color: #98a2b3; }
+    .cost-actions { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+    .cost-actions button { padding: 6px 14px; border: 1px solid #5b8cff; background: #eef3ff; color: #2f66e0; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .cost-actions button:disabled { opacity: .6; cursor: progress; }
+    .cost-note { border: 1px dashed #cbd2da; border-radius: 8px; padding: 10px 12px; color: #667085; font-size: 12px; margin-top: 12px; }
+    .empty { color: #667085; font-size: 13px; padding: 8px 0; }
   </style>
 </head>
 <body>
@@ -43,6 +60,33 @@
     <section>
       <h2>概览</h2>
       <div class="cards" id="cards"></div>
+    </section>
+    <section>
+      <div class="section-head">
+        <h2>意图成本账 <span class="badge">数据源 Langfuse</span></h2>
+        <span class="muted" id="cost-stamp"></span>
+      </div>
+      <p class="hint">
+        意图分类节点跑完会给这条 trace 打一个 intent 标签，之后这条路上的模型调用才计入。
+        指代消解与意图分类本身的开销单列「意图未定」，不摊进任何意图。
+        优化成本先动最贵那条路，不必全局换模型。
+      </p>
+      <div class="cards" id="cost-cards"></div>
+      <div class="bars" id="cost-bars"></div>
+      <table>
+        <thead>
+          <tr><th>意图</th><th>请求数</th><th>总 token</th><th>单均 token</th><th>成本 (¥)</th><th>占比</th></tr>
+        </thead>
+        <tbody id="cost-body"></tbody>
+      </table>
+      <div class="cost-note" id="cost-note">
+        读图：占比按 token 算；「单均」是总 token 除以请求数，请求数取自每轮根观测。
+        报表是产物文件，页面只读它；换口径或补跑数据要点右侧重跑。
+      </div>
+      <div class="cost-actions">
+        <button id="cost-rerun" type="button">在页面上重跑</button>
+        <span class="muted">同口径也可跑 <code>make cost-report</code></span>
+      </div>
     </section>
     <section>
       <h2>模型用量与成本</h2>
@@ -88,6 +132,7 @@
       <li>模型单价来自 config/model_prices.json；未收录的模型按 0 计费。</li>
       <li>interrupted 不计入错误率；错误率 = (error + cancelled) / turns。</li>
       <li>turns 按最近 5000 轮近似。</li>
+      <li>意图成本账来自 Langfuse：只统计意图确定之后创建的观测，指代消解与意图分类单列「意图未定」。</li>
     </ul>
   </footer>
   <script>
@@ -104,6 +149,179 @@
       const n = Number(value);
       if (Number.isNaN(n)) return "—";
       return digits === undefined ? String(n) : n.toFixed(digits);
+    }
+
+    function fmtInt(value) {
+      if (value === null || value === undefined) return "—";
+      const n = Number(value);
+      if (Number.isNaN(n)) return "—";
+      return n.toLocaleString("zh-CN");
+    }
+
+    function fmtStamp(iso) {
+      if (!iso) return "—";
+      return String(iso).replace("T", " ").slice(5, 16);
+    }
+
+    function fmtPct(value) {
+      if (value === null || value === undefined) return "—";
+      return (Number(value) * 100).toFixed(1) + "%";
+    }
+
+    function costCard(label, value, sub) {
+      const card = el("div");
+      card.className = "card";
+      card.appendChild(el("div", label)).className = "label";
+      card.appendChild(el("div", value)).className = "value";
+      if (sub) card.appendChild(el("div", sub)).className = "muted";
+      return card;
+    }
+
+    function renderCost(report) {
+      const cards = document.getElementById("cost-cards");
+      cards.textContent = "";
+      const totals = report.totals || {};
+      const intents = report.intents || [];
+      const top = report.top_intent;
+      const topSub = top
+        ? (top.ranked_by === "cost" ? "按成本" : "按 token（还没配上价格）")
+        : "窗口内还没有数据";
+      cards.appendChild(costCard("最烧钱意图", top ? top.label : "—", topSub));
+      cards.appendChild(costCard("总 token", fmtInt(totals.tokens), "意图确定之后"));
+      cards.appendChild(costCard("意图路数", String(intents.length), "本窗口出现过"));
+      cards.appendChild(costCard(
+        "上次跑于", fmtStamp(report.generated_at),
+        "页面只读产物，不查 Langfuse",
+      ));
+
+      const bars = document.getElementById("cost-bars");
+      bars.textContent = "";
+      if (!intents.length) {
+        bars.appendChild(el("div", "窗口内还没有带意图标签的请求，聊几轮再重跑。")).className = "empty";
+      }
+      for (const item of intents) {
+        const row = el("div");
+        row.className = "bar-row";
+        row.appendChild(el("div", item.label)).className = "bar-label";
+        const track = el("div");
+        track.className = "bar-track";
+        const fill = el("div");
+        fill.className = "bar-fill";
+        const share = Number(item.share || 0) * 100;
+        fill.style.width = (share > 0 ? Math.max(1, share) : 0).toFixed(1) + "%";
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el(
+          "div",
+          fmtInt(item.requests) + " 次 · 单均 " + fmtInt(item.avg_tokens) +
+          " token · " + fmtPct(item.share) + " · " + fmtInt(item.tokens),
+        )).className = "bar-meta";
+        bars.appendChild(row);
+      }
+
+      const body = document.getElementById("cost-body");
+      body.textContent = "";
+      for (const item of intents) {
+        const tr = el("tr");
+        tr.appendChild(el("td", item.label));
+        tr.appendChild(el("td", fmtInt(item.requests)));
+        tr.appendChild(el("td", fmtInt(item.tokens)));
+        tr.appendChild(el("td", fmtInt(item.avg_tokens)));
+        tr.appendChild(el("td", fmtNum(item.cost, 4)));
+        tr.appendChild(el("td", fmtPct(item.share)));
+        body.appendChild(tr);
+      }
+      const untagged = report.untagged || {};
+      if (untagged.requests || untagged.tokens) {
+        const tr = el("tr");
+        tr.className = "row-muted";
+        tr.appendChild(el("td", "意图未定（指代消解/分类）"));
+        tr.appendChild(el("td", fmtInt(untagged.requests)));
+        tr.appendChild(el("td", fmtInt(untagged.tokens)));
+        tr.appendChild(el("td", untagged.requests ? fmtInt(Math.round(untagged.tokens / untagged.requests)) : "—"));
+        tr.appendChild(el("td", fmtNum(untagged.cost, 4)));
+        tr.appendChild(el("td", "—"));
+        body.appendChild(tr);
+      }
+
+      const stamp = document.getElementById("cost-stamp");
+      stamp.textContent = "窗口 近 " + String(report.window_days) +
+        " 天 · 上次跑于 " + fmtStamp(report.generated_at) +
+        " · 环境 " + (report.environment || "—");
+
+      const note = document.getElementById("cost-note");
+      note.textContent = "";
+      note.appendChild(el(
+        "div",
+        "读图：占比按 token 算；「单均」是总 token 除以请求数，请求数取自每轮根观测。",
+      ));
+      for (const warning of report.warnings || []) {
+        note.appendChild(el("div", "⚠ " + warning));
+      }
+    }
+
+    function showCostEmpty(message) {
+      const cards = document.getElementById("cost-cards");
+      cards.textContent = "";
+      document.getElementById("cost-bars").textContent = "";
+      document.getElementById("cost-body").textContent = "";
+      document.getElementById("cost-stamp").textContent = "";
+      document.getElementById("cost-note").textContent = message;
+    }
+
+    async function loadCost() {
+      try {
+        const resp = await fetch("/observability/api/cost-report");
+        if (resp.status === 404) {
+          showCostEmpty("还没有成本报表：点下面的「在页面上重跑」生成，或先跑 make cost-report。");
+          return;
+        }
+        if (!resp.ok) {
+          let detail = "HTTP " + resp.status;
+          try {
+            const data = await resp.json();
+            if (data.detail) detail = data.detail;
+          } catch (e) { /* 保留 HTTP 状态 */ }
+          throw new Error(detail);
+        }
+        renderCost(await resp.json());
+      } catch (err) {
+        showCostEmpty("成本报表加载失败：" + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    async function rerunCost() {
+      const btn = document.getElementById("cost-rerun");
+      btn.disabled = true;
+      btn.textContent = "重跑中…";
+      try {
+        const resp = await fetch("/observability/api/cost-report/rerun", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ days: state.days }),
+        });
+        if (!resp.ok) {
+          let detail = "HTTP " + resp.status;
+          try {
+            const data = await resp.json();
+            if (data.detail) detail = data.detail;
+          } catch (e) { /* 保留 HTTP 状态 */ }
+          throw new Error(detail);
+        }
+        renderCost(await resp.json());
+      } catch (err) {
+        const banner = document.getElementById("error-banner");
+        banner.textContent = "重跑意图成本账失败：" + (err && err.message ? err.message : String(err));
+        banner.hidden = false;
+      } finally {
+        btn.disabled = false;
+        syncRerunLabel();
+      }
+    }
+
+    function syncRerunLabel() {
+      const btn = document.getElementById("cost-rerun");
+      if (!btn.disabled) btn.textContent = "在页面上重跑（近 " + state.days + " 天）";
     }
 
     function renderSummary(s) {
@@ -215,6 +433,8 @@
       const banner = document.getElementById("error-banner");
       banner.hidden = true;
       banner.textContent = "";
+      syncRerunLabel();
+      loadCost();
       try {
         const summary = await getJSON("/observability/api/summary?days=" + days);
         const turns = await getJSON("/observability/api/turns?days=" + days + "&limit=200");
@@ -241,6 +461,8 @@
       }
       load();
     });
+
+    document.getElementById("cost-rerun").addEventListener("click", rerunCost);
 
     load();
   </script>

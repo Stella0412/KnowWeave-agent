@@ -2,6 +2,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+from app.observability import cost_report as cost
 
 router = APIRouter(prefix="/observability", tags=["observability"])
 
@@ -15,6 +18,10 @@ def _service(request: Request):
     if service is None:
         raise HTTPException(status_code=503, detail="观测服务未初始化")
     return service
+
+
+class CostReportRequest(BaseModel):
+    days: int = 7
 
 
 @router.get("", include_in_schema=False)
@@ -52,3 +59,27 @@ async def tools(request: Request, days: int = 7) -> dict:
     if days not in _VALID_DAYS:
         raise HTTPException(status_code=400, detail="days 只能是 1/7/30")
     return await _service(request).tools(days)
+
+
+@router.get("/api/cost-report")
+def cost_report() -> dict:
+    """只读产物——页面不直接查 Langfuse，重跑由按钮触发。"""
+    report = cost.read_report()
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="还没有成本报表，点「在页面上重跑」或先跑 make cost-report",
+        )
+    return report
+
+
+@router.post("/api/cost-report/rerun")
+def rerun_cost_report(req: CostReportRequest) -> dict:
+    if req.days not in _VALID_DAYS:
+        raise HTTPException(status_code=400, detail="days 只能是 1/7/30")
+    try:
+        return cost.refresh(req.days)
+    except cost.CostReportError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
