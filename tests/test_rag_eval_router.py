@@ -82,3 +82,75 @@ def test_page_without_trailing_slash_api_is_not_confused():
     # `/rag-eval/api/...` 不能被页面路由吞掉
     resp = _client().get("/rag-eval/api/latest")
     assert resp.headers["content-type"].startswith("application/json")
+
+
+# ---------------------------------------------------------------------------
+# 飞轮趋势 + 置信度校准
+# ---------------------------------------------------------------------------
+
+
+def test_trends_returns_grouped_rounds(monkeypatch):
+    monkeypatch.setattr(
+        rag_eval.eval_trend_service,
+        "overview",
+        lambda: {"sets": [{"eval_set": "ch04", "rounds": [{"round_id": "r1"}]}], "warnings": []},
+    )
+    resp = _client().get("/rag-eval/api/trends")
+    assert resp.status_code == 200
+    assert resp.json()["sets"][0]["eval_set"] == "ch04"
+
+
+def test_calibration_404_before_first_run(monkeypatch):
+    monkeypatch.setattr(rag_eval.calibration_service, "latest", lambda: None)
+    resp = _client().get("/rag-eval/api/calibration")
+    assert resp.status_code == 404
+    assert "make calibrate-confidence" in resp.json()["detail"]
+
+
+def test_calibration_adds_the_live_threshold(monkeypatch):
+    monkeypatch.setattr(
+        rag_eval.calibration_service, "latest", lambda: {"in_use": 0.3, "recommended": 0.45},
+    )
+    resp = _client().get("/rag-eval/api/calibration")
+    assert resp.status_code == 200
+    assert resp.json()["recommended"] == 0.45
+    assert "in_use_live" in resp.json()
+
+
+def test_calibrate_conflicts_when_already_running(monkeypatch):
+    monkeypatch.setattr(
+        rag_eval.calibration_service, "start", lambda limit: (False, {"status": "running"}),
+    )
+    resp = _client().post("/rag-eval/api/calibrate", json={})
+    assert resp.status_code == 409
+
+
+def test_calibrate_accepts_and_returns_state(monkeypatch):
+    monkeypatch.setattr(
+        rag_eval.calibration_service,
+        "start",
+        lambda limit: (True, {"status": "running", "run_id": "c1", "limit": limit}),
+    )
+    resp = _client().post("/rag-eval/api/calibrate", json={"limit": 30})
+    assert resp.status_code == 202
+    assert resp.json()["limit"] == 30
+
+
+def test_calibrate_rejects_bad_limit(monkeypatch):
+    def _reject(limit):
+        raise ValueError("limit 必须是正整数")
+
+    monkeypatch.setattr(rag_eval.calibration_service, "start", _reject)
+    resp = _client().post("/rag-eval/api/calibrate", json={"limit": 0})
+    assert resp.status_code == 400
+    assert "正整数" in resp.json()["detail"]
+
+
+def test_calibrate_status_reports_state(monkeypatch):
+    monkeypatch.setattr(
+        rag_eval.calibration_service,
+        "get_status",
+        lambda: {"status": "idle", "progress": None},
+    )
+    resp = _client().get("/rag-eval/api/calibrate/status")
+    assert resp.json()["status"] == "idle"

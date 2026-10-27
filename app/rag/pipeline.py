@@ -120,8 +120,14 @@ def run_pipeline(
     recall_top_k: int | None = None,
     rerank_top_n: int | None = None,
     rrf_k: int | None = None,
+    confidence_min_score: float | None = None,
+    enable_self_check: bool = True,
 ) -> RagResult:
-    """公开入口：包一层 retriever observation 后跑 `_run_pipeline`。"""
+    """公开入口：包一层 retriever observation 后跑 `_run_pipeline`。
+
+    `confidence_min_score` / `enable_self_check` 只给评估与校准用：把闸门放到 0 并跳过
+    自评，才能在**不改变线上链路**的前提下拿到每一题的证据置信度。生产调用保持默认。
+    """
     with observation_scope(
         "retriever",
         "retrieve-knowledge",
@@ -146,6 +152,8 @@ def run_pipeline(
             recall_top_k=recall_top_k,
             rerank_top_n=rerank_top_n,
             rrf_k=rrf_k,
+            confidence_min_score=confidence_min_score,
+            enable_self_check=enable_self_check,
         )
         if span is not None:
             span.update(output=_retrieval_summary(result))
@@ -165,6 +173,8 @@ def _run_pipeline(
     recall_top_k: int | None = None,
     rerank_top_n: int | None = None,
     rrf_k: int | None = None,
+    confidence_min_score: float | None = None,
+    enable_self_check: bool = True,
 ) -> RagResult:
     """跑一轮检索 + 质控，返回带引用的证据文本或拒答结论。
 
@@ -232,8 +242,11 @@ def _run_pipeline(
                     "degraded": rerank_degraded,
                 })
 
-    # 4. 检索侧早拒
-    decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
+    # 4. 检索侧早拒：置信度看「真正会进 prompt 的这几条」（精排后 items），不是召回全集
+    decision = retrieval_gate(
+        chosen, items, query=query, rerank_score=rerank_score,
+        confidence_min_score=confidence_min_score,
+    )
     if decision.refused:
         refusal_citations = (
             to_citations(assemble(items[:rerank_n]), source_files)
@@ -251,17 +264,18 @@ def _run_pipeline(
     citations = to_citations(assembled, source_files)
 
     # 6. 生成前自评（拿**用户原话**，不是改写后的问法；失败视为够答）
-    sufficient, reason = _self_check(query, evidence_text, model=model)
-    if sufficient is None:
-        logger.warning("自评失败，按「够答」继续（不因一次抖动把能答的问题拒掉）")
-    else:
-        check = self_check_gate(sufficient, reason)
-        if check.refused:
-            return _refused(
-                query, chosen, check, citations=citations,
-                standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
-                rerank_degraded=rerank_degraded, rerank_score=rerank_score,
-            )
+    if enable_self_check:
+        sufficient, reason = _self_check(query, evidence_text, model=model)
+        if sufficient is None:
+            logger.warning("自评失败，按「够答」继续（不因一次抖动把能答的问题拒掉）")
+        else:
+            check = self_check_gate(sufficient, reason)
+            if check.refused:
+                return _refused(
+                    query, chosen, check, citations=citations,
+                    standard_query=rewrite.standard_query, rewrite_degraded=rewrite.degraded,
+                    rerank_degraded=rerank_degraded, rerank_score=rerank_score,
+                )
 
     return RagResult(
         refused=False, raw_query=query, strategy=chosen,
@@ -285,6 +299,8 @@ def run_expanded_pipeline(
     recall_top_k: int | None = None,
     rerank_top_n: int | None = None,
     rrf_k: int | None = None,
+    confidence_min_score: float | None = None,
+    enable_self_check: bool = True,
 ) -> RagResult:
     """公开入口：包一层 retriever observation 后跑 `_run_expanded_pipeline`。"""
     cleaned = [q.strip()[:_QUERY_MAX_LENGTH] for q in (queries or []) if q and q.strip()]
@@ -314,6 +330,8 @@ def run_expanded_pipeline(
             recall_top_k=recall_top_k,
             rerank_top_n=rerank_top_n,
             rrf_k=rrf_k,
+            confidence_min_score=confidence_min_score,
+            enable_self_check=enable_self_check,
         )
         if span is not None:
             span.update(output=_retrieval_summary(result))
@@ -334,12 +352,15 @@ def _run_expanded_pipeline(
     recall_top_k: int | None = None,
     rerank_top_n: int | None = None,
     rrf_k: int | None = None,
+    confidence_min_score: float | None = None,
+    enable_self_check: bool = True,
 ) -> RagResult:
     """多查询召回 → 按 chunk id 去重 → 用扩写主查询精排一次 → 单次自评。
 
     精排查询必须是**政策化**的扩写主查询（`cleaned[0]`），不能直接用口语原句：
     原句带着商品名/订单号（如「订单1001的猫爬架能退吗」），而政策条款里没有这些词，
-    交叉编码器会把真正适用的条款压到 0.25 的拒答闸门以下（实测 0.23 vs 0.83）。
+    交叉编码器会把真正适用的条款压到证据置信度闸门以下（实测精排 0.23 vs 0.83，
+    闸门见 `app/rag/confidence.py`）。
     扩写降级时 `cleaned == [resolved_query]`，行为自然退回单查询精排。
     """
     resolution = (resolved_query or "").strip()[:_QUERY_MAX_LENGTH]
@@ -416,7 +437,11 @@ def _run_expanded_pipeline(
                     "degraded": rerank_degraded,
                 })
 
-    decision = retrieval_gate(chosen, candidates, rerank_score=rerank_score)
+    # 置信度看「真正会进 prompt 的这几条」（精排后 items），口径与主链路一致。
+    decision = retrieval_gate(
+        chosen, items, query=resolution, rerank_score=rerank_score,
+        confidence_min_score=confidence_min_score,
+    )
     if decision.refused:
         refusal_citations = (
             to_citations(assemble(items[:rerank_n]), source_files)
@@ -431,7 +456,10 @@ def _run_expanded_pipeline(
     assembled = assemble(items)
     evidence_text = build_evidence_block(assembled)
     citations = to_citations(assembled, source_files)
-    sufficient, reason = _self_check(resolution, evidence_text, model=model)
+    if enable_self_check:
+        sufficient, reason = _self_check(resolution, evidence_text, model=model)
+    else:
+        sufficient = None
     if sufficient is not None:
         check = self_check_gate(sufficient, reason)
         if check.refused:

@@ -11,6 +11,7 @@
 from dataclasses import dataclass
 
 from app.config import settings
+from app.rag.confidence import signals
 from app.rag.evidence import Evidence
 from app.rag.strategies import VECTOR, has_rerank
 
@@ -47,8 +48,9 @@ def retrieval_gate(
     strategy: str,
     candidates: list[Evidence],
     *,
+    query: str = "",
     rerank_score: float | None = None,
-    rerank_min_score: float | None = None,
+    confidence_min_score: float | None = None,
     dense_min_score: float | None = None,
 ) -> RefusalDecision:
     """检索侧早拒。`rerank_score` 的语义**收紧为「精排真的跑成了」时才有值**：
@@ -58,16 +60,23 @@ def retrieval_gate(
         return RefusalDecision(True, SOURCE_RETRIEVAL, "召回结果为空：知识库里没有可用的候选")
 
     if has_rerank(strategy):
-        threshold = settings.rerank_min_score if rerank_min_score is None else rerank_min_score
+        threshold = (
+            settings.confidence_min_score
+            if confidence_min_score is None
+            else confidence_min_score
+        )
         # Ruling R1：rerank_score is None 表示「精排上游降级」，此时 candidates 的 score 是
-        # hybrid_search 的 RRF 名次倒数（≈0.016~0.033），与精排分不同量纲 —— 拿它比 threshold
+        # hybrid_search 的 RRF 名次倒数（≈0.016~0.033），与精排分不同量纲 —— 拿它算置信度
         # 会把每一道题都拒掉。降级等价于纯 hybrid：除空结果外不拒（与下面 BM25/HYBRID 同规则）。
         if rerank_score is None:
             return RefusalDecision(False)
-        if rerank_score < threshold:
+        confidence = signals(candidates, query)
+        if confidence.score < threshold:
             return RefusalDecision(
                 True, SOURCE_RETRIEVAL,
-                f"精排最高分 {rerank_score:.4f} 低于阈值 {threshold:.4f}，证据相关性不足",
+                f"证据置信度 {confidence.score:.4f} 低于阈值 {threshold:.4f}"
+                f"（Top1 {confidence.top1:.3f} / 有效证据 {confidence.effective * 3:.0f} 条"
+                f" / 分差 {confidence.margin:.2f} / 关键条款 {confidence.clause:.0%}）",
             )
         return RefusalDecision(False)
 

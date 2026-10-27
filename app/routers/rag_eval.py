@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.config import settings
+from app.services import calibration_service, eval_trend_service
 from app.services import rag_eval_service as service
 
 router = APIRouter(prefix="/rag-eval", tags=["rag-eval"])
@@ -18,6 +20,10 @@ class RunRequest(BaseModel):
 class FaithCaseRequest(BaseModel):
     status: str
     resolution: str | None = None
+
+
+class CalibrateRequest(BaseModel):
+    limit: int | None = None
 
 
 @router.get("", include_in_schema=False)
@@ -49,6 +55,39 @@ def run(req: RunRequest) -> dict:
     if not accepted:
         raise HTTPException(status_code=409, detail="已有评估在运行，请等待完成")
     return state
+
+
+@router.get("/api/trends")
+def trends() -> dict:
+    return eval_trend_service.overview()
+
+
+@router.get("/api/calibration")
+def calibration() -> dict:
+    report = calibration_service.latest()
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="还没有校准产物，先点「重跑校准」或 make calibrate-confidence",
+        )
+    # 产物按运行时的阈值算；配置若事后被改，页面要能看出产物已经对不上在用值。
+    return {**report, "in_use_live": settings.confidence_min_score}
+
+
+@router.post("/api/calibrate", status_code=202)
+def calibrate(req: CalibrateRequest) -> dict:
+    try:
+        accepted, state = calibration_service.start(req.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not accepted:
+        raise HTTPException(status_code=409, detail="已有校准在运行，请等待完成")
+    return state
+
+
+@router.get("/api/calibrate/status")
+def calibrate_status() -> dict:
+    return calibration_service.get_status()
 
 
 @router.get("/api/faith-cases")

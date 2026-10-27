@@ -429,7 +429,81 @@
   }
   .evidence-item b { color: var(--brand); }
 
+  /* 飞轮趋势 */
+  .badge {
+    font-size: 10.5px; font-weight: 600; color: var(--brand);
+    background: #fff1e8; border: 1px solid #ffd9c4; border-radius: 5px;
+    padding: 1px 7px;
+  }
+  .alert {
+    font-size: 12.5px; color: var(--bad); background: var(--bad-bg);
+    border: 1px solid #f3cccc; border-radius: 9px; padding: 9px 12px; margin: 10px 0;
+  }
+  .trend-wrap { overflow-x: auto; margin-top: 10px; }
+  .trend-table { border-collapse: separate; border-spacing: 8px 0; min-width: 100%; }
+  .trend-table th, .trend-table td { border-bottom: none; padding: 8px 0; vertical-align: top; }
+  .trend-table th { font-size: 11px; padding-left: 10px; }
+  .trend-set { min-width: 150px; padding-left: 0 !important; padding-top: 10px !important; }
+  .trend-set b { display: block; font-size: 13px; }
+  .trend-set span { font-size: 11px; color: var(--muted); }
+  .round-cell {
+    border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px;
+    background: #fffdfa; min-width: 162px;
+  }
+  .round-cell.latest { border-color: #ffd0b8; box-shadow: inset 0 0 0 1px #ffe8dc; }
+  .round-cell.flag { border-color: #f3cccc; background: #fffafa; }
+  .round-top { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .round-trigger {
+    font-size: 10px; border-radius: 4px; padding: 0 5px;
+    background: #fbf3ec; color: #7b6a5e; border: 1px solid var(--border);
+  }
+  .round-trigger.auto { color: #6d4fc4; background: #f3eefd; border-color: #ded2f7; }
+  .round-time { font-size: 10.5px; color: var(--muted); margin-left: auto; }
+  .round-metric { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.7; }
+  .round-metric span { color: var(--muted); min-width: 68px; }
+  .round-metric b { font-variant-numeric: tabular-nums; }
+  .round-metric em { font-style: normal; font-size: 10.5px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .delta.up { color: var(--ok); }
+  .delta.down { color: var(--bad); }
+  .round-status { font-size: 10.5px; color: var(--muted); border-top: 1px dashed var(--border); margin-top: 5px; padding-top: 4px; }
+  .round-status.warn { color: var(--warn); }
+
+  /* 置信度阈值校准 */
+  .cal-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  .cal-card { border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px; background: #fffdfa; }
+  .cal-card .k { font-size: 11.5px; color: var(--muted); }
+  .cal-card .v { font-size: 26px; font-weight: 650; margin: 2px 0 3px; }
+  .cal-card .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .cal-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: #6b6b6b; margin-top: 18px; }
+  .cal-legend i {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 5px; vertical-align: -1px;
+  }
+  .cal-legend i.dash { width: 14px; height: 0; border-top: 2px dashed #333; border-radius: 0; }
+  .scan-chart { width: 100%; margin-top: 6px; }
+  .scan-chart text { font-size: 11px; fill: var(--muted); font-family: inherit; }
+  .scan-chart .axis { stroke: #eadfd5; stroke-width: 1; }
+  .scan-chart .grid { stroke: #f4ece5; stroke-dasharray: 3 4; }
+  .scan-note {
+    border: 1.5px dashed #d9c9bb; border-radius: 10px; padding: 10px 13px;
+    font-size: 12px; color: #6b5d52; line-height: 1.8; margin-top: 12px;
+  }
+  .scan-note b { color: var(--ink); }
+  .explain-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .explain {
+    border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px;
+    font-size: 12px; color: #6b6b6b; line-height: 1.75;
+  }
+  .explain b { display: block; color: var(--ink); font-size: 12.5px; margin-bottom: 3px; }
+  .cal-run-title { font-size: 11.5px; color: var(--muted); margin-top: 18px; }
+  .cal-run { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+  .cal-run .cap { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+  .cal-run-state { font-size: 12px; color: var(--muted); }
+  .cal-run-state.error { color: var(--bad); }
+
   @media (max-width: 760px) {
+    .cal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .explain-grid { grid-template-columns: 1fr; }
     .mini { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .rankings { grid-template-columns: repeat(4, 230px); }
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -506,6 +580,10 @@ const METRIC_META = {
 };
 
 let latest = null;
+let trends = null;
+let calibration = null;
+let calRunning = false;
+let trendWidth = 1;
 let filter = { bucket: "", difficulty: "", behavior: "", text: "" };
 let qualityMetric = "mrr@10";
 let wasRunning = false;
@@ -1307,13 +1385,398 @@ function renderAnswerSection(data) {
   </section>`;
 }
 
+/* ---------- 飞轮评估趋势 ---------- */
+
+const TREND_METRICS = [
+  ["faithfulness", "Faithfulness", false],
+  ["coverage", "答案覆盖", false],
+  ["refusal_accuracy", "拒答正确率", false],
+  ["recall_at_5", "Recall@5", false],
+  ["misblocked_rate", "误拦率", true],
+];
+
+function trendCard() {
+  return `<section class="card" id="trend-card">
+    <h2>🧭 飞轮评估趋势 <span class="badge">ch04 评估集</span></h2>
+    <p class="sub">评估流水线定期跑，防飞轮灌进来的脏知识把指标拉下去。同一评估集写在同一行，
+      只有同一集的两轮才比得动；Faithfulness 掉出容差会在这里直接警告。</p>
+    <div id="trend-panel"></div>
+  </section>`;
+}
+
+function renderTrendPanel() {
+  const panel = $("trend-panel");
+  if (!panel) return;
+  panel.innerHTML = trends ? trendBody(trends) : trendEmpty("趋势读不到：服务未就绪。");
+}
+
+function trendEmpty(message) {
+  return `<div class="empty" style="padding:26px 10px">
+    <div class="big">🧭</div>${esc(message)}<br>
+    <span class="note">首轮 make eval-flywheel（TRIGGER 默认手动）；之后 TRIGGER=定时 make eval-flywheel。</span>
+  </div>`;
+}
+
+function trendDelta(delta, lowerIsBetter) {
+  if (typeof delta !== "number") return "";
+  if (Math.abs(delta) < 0.0005) return `<em class="delta">±0</em>`;
+  const good = lowerIsBetter ? delta < 0 : delta > 0;
+  return `<em class="delta ${good ? "up" : "down"}">${delta > 0 ? "+" : "−"}${
+    (Math.abs(delta) * 100).toFixed(1)}</em>`;
+}
+
+function renderRoundCell(round, isLatest) {
+  const metrics = round.metrics || {};
+  const cmp = round.comparison || {};
+  const deltas = cmp.deltas || {};
+  let status = "基线（首次记录）";
+  let cls = "round-status";
+  if (cmp.status === "comparable") {
+    status = cmp.warnings && cmp.warnings.length
+      ? `与上轮可比 · ${cmp.warnings.length} 条警告` : "与上轮可比";
+    if (cmp.warnings && cmp.warnings.length) cls += " warn";
+  } else if (cmp.status === "incomparable") {
+    status = "不可比：评估集已换，重置基线";
+    cls += " warn";
+  }
+  const rows = TREND_METRICS.map(([key, label, lower]) => `
+    <div class="round-metric"><span>${label}</span><b>${pct(metrics[key])}</b>${
+      cmp.status === "comparable" ? trendDelta(deltas[key], lower) : ""}</div>`).join("");
+  return `<td><div class="round-cell ${isLatest ? "latest" : ""} ${
+    cmp.status === "incomparable" ? "flag" : ""}">
+    <div class="round-top">
+      <span class="round-trigger ${round.trigger === "定时" ? "auto" : ""}">${esc(round.trigger)}</span>
+      <span class="round-time">${esc(formatTime(round.finished_at).slice(5))}</span>
+    </div>
+    ${rows}
+    <div class="${cls}" title="${esc(cmp.reason || "")}">${esc(status)}</div>
+  </div></td>`;
+}
+
+function renderTrendSet(set) {
+  const rounds = set.rounds || [];
+  const cells = Array.from({ length: trendWidth }, (_, i) => {
+    const round = rounds[i];
+    return round ? renderRoundCell(round, i === rounds.length - 1) : "<td></td>";
+  }).join("");
+  const first = rounds[0] || {};
+  return `<tr>
+    <td class="trend-set"><b>${esc(set.eval_set)}</b>
+      <span>${first.sample_count ?? "—"} 题 · 集 ${esc(set.eval_set_hash)}</span></td>
+    ${cells}
+  </tr>`;
+}
+
+function trendBody(data) {
+  const sets = data.sets || [];
+  if (!sets.length) return trendEmpty("还没有飞轮轮次。");
+  const width = Math.max(1, ...sets.map((s) => (s.rounds || []).length));
+  trendWidth = width;
+  const warnings = (data.warnings || [])
+    .map((w) => `<div class="alert">⚠️ ${esc(w)}</div>`).join("");
+  return `${warnings}
+    <div class="trend-wrap"><table class="trend-table">
+      <thead><tr><th>评估集</th><th colspan="${width}">轮次 · 左旧右新（最多最近 6 轮）</th></tr></thead>
+      <tbody>${sets.map(renderTrendSet).join("")}</tbody>
+    </table></div>
+    <p class="note">首轮 <code>make eval-flywheel</code>；定时轮 <code>TRIGGER=定时 make eval-flywheel</code>，
+      跑完自动与本集上一轮对比。评估集文件一变，哈希不同，就另起一行、重置基线。</p>`;
+}
+
+/* ---------- 置信度阈值校准 ---------- */
+
+function calibrationCard() {
+  return `<section class="card" id="cal-card">
+    <h2>🎚️ 置信度阈值校准 <span class="badge">ch04 评估集实跑</span></h2>
+    <p class="sub">兜底那道闸卡在什么分上，不是拍脑袋定的。拿评估集里可答的和该拒的两拨题
+      各算一遍证据置信度，再扫一遍阈值，看哪条线把两拨分得最开。</p>
+    <div id="cal-panel"></div>
+  </section>`;
+}
+
+function renderCalPanel() {
+  const panel = $("cal-panel");
+  if (!panel) return;
+  panel.innerHTML = calibration ? calibrationBody(calibration) : calibrationEmpty();
+  bindCalibration();
+}
+
+function calibrationEmpty() {
+  return `<div class="empty" style="padding:26px 10px">
+    <div class="big">🎚️</div>还没有校准产物。点下面按钮跑一轮，或 make calibrate-confidence。
+    <div class="cal-run" style="justify-content:center">
+      <button id="cal-rerun"${calRunning ? " disabled" : ""}>重跑 置信度阈值校准</button>
+      <span id="cal-state" class="cal-run-state">${esc(calStateText())}</span>
+    </div>
+  </div>`;
+}
+
+function calStateText() {
+  if (calRunning) return "校准运行中…";
+  return "make calibrate-confidence";
+}
+
+function calibrationChart(report) {
+  const scan = report.scan || {};
+  const xs = scan.thresholds || [];
+  const pass = scan.pass_rates || [];
+  const falsePass = scan.false_pass_rates || [];
+  if (xs.length < 2) return "";
+  const W = 1000, H = 320, L = 58, R = 26, T = 20, B = 46;
+  const xMin = xs[0], xMax = xs[xs.length - 1];
+  const x = (t) => L + ((t - xMin) / (xMax - xMin)) * (W - L - R);
+  const y = (v) => T + (1 - v) * (H - T - B);
+  const line = (values) => values
+    .map((v, i) => `${i === 0 ? "M" : "L"}${x(xs[i]).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((v) => `
+    <line class="grid" x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}"></line>
+    <text x="${L - 10}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(2)}</text>`).join("");
+  const ticks = [0.05, 0.2, 0.4, 0.6, 0.8, 0.95].filter((t) => t >= xMin && t <= xMax)
+    .map((t) => `<text x="${x(t).toFixed(1)}" y="${H - B + 20}" text-anchor="middle">${
+      t.toFixed(2)}</text>`).join("");
+  const mark = (t, color, label, dashed = false) => {
+    if (typeof t !== "number" || t < xMin || t > xMax) return "";
+    const px = x(t).toFixed(1);
+    return `<line x1="${px}" y1="${T}" x2="${px}" y2="${H - B}" stroke="${color}"
+        stroke-width="${dashed ? 1.6 : 2}"${dashed ? ' stroke-dasharray="5 4"' : ""}></line>
+      <text x="${px}" y="${T - 6}" text-anchor="middle" fill="${color}">${label} ${t.toFixed(2)}</text>`;
+  };
+  // 两条线几乎重合时只画一条，免得标签叠在一起
+  const sameLine = Math.abs((report.in_use ?? 0) - (report.recommended ?? 0)) < 0.02;
+  return `<svg class="scan-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="阈值扫描曲线">
+    ${grid}
+    <line class="axis" x1="${L}" y1="${H - B}" x2="${W - R}" y2="${H - B}"></line>
+    <text x="${(L + W - R) / 2}" y="${H - 8}" text-anchor="middle">阈值 t</text>
+    ${ticks}
+    <path d="${line(pass)}" fill="none" stroke="#34b37a" stroke-width="2.2"></path>
+    <path d="${line(falsePass)}" fill="none" stroke="#f2678a" stroke-width="2.2"></path>
+    ${sameLine ? "" : mark(report.in_use, "#8b5cf6", "在用")}
+    ${mark(report.recommended, "#333", sameLine ? "选定/在用" : "选定", true)}
+  </svg>`;
+}
+
+function nearestScanIndex(report, t) {
+  const xs = (report.scan || {}).thresholds || [];
+  let best = 0, distance = Infinity;
+  xs.forEach((value, index) => {
+    const d = Math.abs(value - t);
+    if (d < distance) { distance = d; best = index; }
+  });
+  return best;
+}
+
+function calibrationNote(report) {
+  const use = report.in_use, rec = report.recommended;
+  const atUse = report.at_in_use || {}, atRec = report.at_recommended || {};
+  const scan = report.scan || {};
+  const parts = [
+    `当前在用阈值 <b>${num(use, 2)}</b> 下，应拒放行率 <b>${pct(atUse.false_pass_rate)}</b>、
+     可答通过率 <b>${pct(atUse.pass_rate)}</b>。`,
+    `数学最优点（推荐阈值 <b>${num(rec, 2)}</b>，Youden J <b>${num(report.youden, 3)}</b>）：
+     应拒放行率 <b>${pct(atRec.false_pass_rate)}</b>、可答通过率 <b>${pct(atRec.pass_rate)}</b>。`,
+  ];
+  if (use !== rec) {
+    const looser = use < rec;
+    const same = atUse.pass_rate === atRec.pass_rate
+      && atUse.false_pass_rate === atRec.false_pass_rate;
+    if (same) {
+      // 两条线之间没有分数落进来：说「没有变化」比编一句「往右挪」更诚实。
+      parts.push(`在用值比推荐值更${looser ? "宽松" : "保守"}（${num(use, 2)} ↔ ${num(rec, 2)}），
+        但这组题上没有分数落在两条线之间，指标完全一样。`);
+    } else {
+      parts.push(`从推荐值往${looser ? "左" : "右"}挪到在用值 ${num(use, 2)}，可答通过率
+        ${pct(atRec.pass_rate)} → ${pct(atUse.pass_rate)}，
+        误放率 ${pct(atRec.false_pass_rate)} → ${pct(atUse.false_pass_rate)}。`);
+    }
+  }
+  // 以「现在实际在用的那条线」为起点：再往左就是拿多少误放换回多少可答。
+  const index = nearestScanIndex(report, use);
+  const rates = scan.false_pass_rates || [];
+  // 往左找第一条误放率真的抬起来的线；找不到就不说，免得「升到 5.0%」这种原地打转。
+  let leftIndex = -1;
+  for (let i = index - 1; i >= Math.max(0, index - 10); i -= 1) {
+    if (rates[i] > rates[index]) { leftIndex = i; break; }
+  }
+  if (leftIndex >= 0) {
+    parts.push(`再往左放到 ${num(scan.thresholds[leftIndex], 2)}，应拒放行率会升到
+      <b>${pct(rates[leftIndex])}</b>。`);
+  }
+  const zeroIndex = rates.findIndex((rate) => rate === 0);
+  if (zeroIndex >= 0 && scan.thresholds[zeroIndex] > rec) {
+    parts.push(`要把误放压到 0，线得抬到 <b>${num(scan.thresholds[zeroIndex], 2)}</b>，
+      可答通过率只剩 <b>${pct((scan.pass_rates || [])[zeroIndex])}</b>。`);
+  }
+  parts.push("这条线就是两边代价的拐点；误拦的题走兜底进问题池，成为飞轮的燃料。");
+  return `<div class="scan-note">读图：${parts.join(" ")}</div>`;
+}
+
+function calibrationBody(report) {
+  const use = report.in_use, rec = report.recommended;
+  const atUse = report.at_in_use || {};
+  const dist = report.distribution || {};
+  const relation = use > rec ? "高于推荐值：更保守，误放更少、误拦更多"
+    : use < rec ? "低于推荐值：更宽松，可答更多、误放更多" : "与推荐值一致";
+  const cards = [
+    ["推荐阈值", num(rec, 2), `Youden J ${num(report.youden, 3)} · 两拨分最开的线`],
+    ["在用阈值", num(use, 2), relation],
+    ["可答通过率", pct(atUse.pass_rate), `库里其实有答案、召回够得着的占比（在用阈值 ${num(use, 2)} 下）`],
+    ["应拒放行率", pct(atUse.false_pass_rate), `库外问题被放进来的占比（在用阈值 ${num(use, 2)} 下）`],
+  ].map(([label, value, hint]) => `<div class="cal-card">
+      <div class="k">${label}</div><div class="v">${value}</div>
+      <div class="hint">${hint}</div></div>`).join("");
+
+  const distRows = [
+    ["可答（A/B/C/E 桶）", dist.answerable],
+    ["应拒（D 桶）", dist.refuse],
+  ].map(([label, row]) => `<tr><td>${label}</td><td class="num">${row ? row.count : "—"}</td>
+      <td class="num">${num(row && row.min, 3)}</td><td class="num">${num(row && row.p25, 3)}</td>
+      <td class="num">${num(row && row.median, 3)}</td><td class="num">${num(row && row.p75, 3)}</td>
+      <td class="num">${num(row && row.max, 3)}</td></tr>`).join("");
+
+  const stale = typeof report.in_use_live === "number" && report.in_use_live !== use
+    ? `<p class="note warn">配置里的在用阈值已是 ${num(report.in_use_live, 2)}，
+        这份产物还是按 ${num(use, 2)} 算的，请重跑校准。</p>` : "";
+  const degraded = report.degraded_count
+    ? `（另排除 ${report.degraded_count} 题精排降级）` : "";
+  const stamp = report.generated_at
+    ? `产物生成于 ${esc(formatTime(report.generated_at))} · ${report.sample_count ?? "—"} 题${degraded}`
+    : "";
+
+  return `${stale}
+    <div class="cal-grid">${cards}</div>
+    <div class="trend-wrap"><table style="margin-top:14px">
+      <thead><tr><th>题型</th><th class="num">题数</th><th class="num">最低</th>
+        <th class="num">p25</th><th class="num">中位</th><th class="num">p75</th>
+        <th class="num">最高</th></tr></thead>
+      <tbody>${distRows}</tbody>
+    </table></div>
+    <div class="cal-legend">
+      <span><i style="background:#34b37a"></i>可答通过率</span>
+      <span><i style="background:#f2678a"></i>应拒放行率</span>
+      <span><i class="dash"></i>选定阈值</span>
+      <span><i style="background:#8b5cf6"></i>在用阈值</span>
+    </div>
+    ${calibrationChart(report)}
+    ${calibrationNote(report)}
+    <div class="explain-grid">
+      <div class="explain"><b>置信度怎么算出来的</b>
+        四信号加权：Top1 精排分 0.5 / 有效证据数 0.2 / Top1-Top2 分差 0.2 / 关键条款命中 0.1。
+        权重是代码里的常量（app/rag/confidence.py），校准校的只是这条线划在哪。</div>
+      <div class="explain"><b>什么是「可答被误拦」</b>
+        库里其实有答案，但这次召回的证据太差（库里有「猫窝清洗保养说明」，用户问「能扔洗衣机里洗吗」），
+        措辞离得远、精排分上不去，置信度掉到线以下。只看证据分不知道「库里有」，于是当成答不上来 ——
+        问题落池、归并、审核补进知识库，下次同样问法就能召回，误拦是飞轮的燃料。
+        反过来，「误放」是库里没有答案、本该拒答却被放进来，用户拿到编造的话；所以这条线两边都有代价。</div>
+    </div>
+    <div class="cal-run-title">在页面上重跑</div>
+    <div class="cal-run">
+      <button id="cal-rerun"${calRunning ? " disabled" : ""}>重跑 置信度阈值校准</button>
+      <span class="cap">make calibrate-confidence</span>
+      <span id="cal-state" class="cal-run-state">${esc(stamp || calStateText())}</span>
+    </div>`;
+}
+
+function bindCalibration() {
+  const button = $("cal-rerun");
+  if (button) button.addEventListener("click", rerunCalibration);
+}
+
+async function rerunCalibration() {
+  const button = $("cal-rerun");
+  if (button) button.disabled = true;
+  calRunning = true;
+  setCalState("校准启动…");
+  try {
+    const resp = await fetch("/rag-eval/api/calibrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (resp.status === 409) {
+      setCalState("已有校准在运行，等它跑完…");
+    } else if (!resp.ok) {
+      throw new Error(body.detail || `HTTP ${resp.status}`);
+    }
+    pollCalibration();
+  } catch (err) {
+    calRunning = false;
+    if (button) button.disabled = false;
+    setCalState("启动失败：" + err.message, true);
+  }
+}
+
+async function pollCalibration() {
+  let state;
+  try {
+    state = await fetchJson("/rag-eval/api/calibrate/status");
+  } catch (err) {
+    calRunning = false;
+    setCalState("无法连接服务：" + err.message, true);
+    return;
+  }
+  if (state.status === "running") {
+    const progress = state.progress || {};
+    setCalState(progress.total ? `${progress.message || "运行中"}（${progress.done}/${progress.total}）`
+      : (progress.message || "运行中…"));
+    setTimeout(pollCalibration, 1500);
+    return;
+  }
+  calRunning = false;
+  if (state.status === "error") {
+    setCalState("校准失败：" + (state.error || "未知错误"), true);
+    return;
+  }
+  if (state.status === "done") {
+    await loadCalibration();
+    setCalState("本轮校准完成，产物已刷新");
+  }
+}
+
+function setCalState(text, error = false) {
+  const el = $("cal-state");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "cal-run-state" + (error ? " error" : "");
+}
+
+async function loadTrends() {
+  try {
+    trends = await fetchJson("/rag-eval/api/trends");
+  } catch (err) {
+    trends = null;
+  }
+  renderTrendPanel();
+}
+
+async function loadCalibration() {
+  try {
+    const resp = await fetch("/rag-eval/api/calibration");
+    if (resp.status === 404) {
+      calibration = null;
+    } else if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    } else {
+      calibration = await resp.json();
+    }
+  } catch (err) {
+    calibration = null;
+  }
+  renderCalPanel();
+}
+
 function renderApp() {
+  const cards = [trendCard(), calibrationCard()];
   if (!latest) {
-    $("content").innerHTML = '<div class="empty"><div class="big">🧪</div>还没有评估结果，点上面的按钮跑一轮。</div>';
+    $("content").innerHTML = `<div class="empty"><div class="big">🧪</div>还没有评估结果，点上面的按钮跑一轮。</div>${
+      cards.join("")}`;
+    renderTrendPanel();
+    renderCalPanel();
     return;
   }
   $("content").innerHTML = [
     renderSummary(latest),
+    cards[0],
     renderStrategyTable(latest),
     renderQualitySection(latest),
     renderFullData(latest),
@@ -1327,7 +1790,10 @@ function renderApp() {
       ${renderFilterBar()}
       <div id="retrieval-list"></div>
     </section>`,
+    cards[1],
   ].join("");
+  renderTrendPanel();
+  renderCalPanel();
   bindFilters();
   bindQualityTabs();
   bindFabrication();
@@ -1453,6 +1919,7 @@ $("run-full").addEventListener("click", () => startRun("full"));
     $("content").replaceChildren(box);
     return;
   }
+  await Promise.all([loadTrends(), loadCalibration()]);
   const state = await fetchStatus().catch(() => null);
   if (state) {
     updateRunState(state);
@@ -1460,6 +1927,13 @@ $("run-full").addEventListener("click", () => startRun("full"));
       wasRunning = true;
       setTimeout(poll, 1200);
     }
+  }
+  const calSnapshot = await fetchJson("/rag-eval/api/calibrate/status").catch(() => null);
+  if (calSnapshot && calSnapshot.status === "running") {
+    calRunning = true;
+    const button = $("cal-rerun");
+    if (button) button.disabled = true;
+    pollCalibration();
   }
 })();
 </script>

@@ -11,10 +11,10 @@ from app.rag.refusal import (
 from app.rag.strategies import BM25, HYBRID, HYBRID_RERANK, VECTOR
 
 
-def _ev(i, score):
+def _ev(i, score, question="q"):
     return Evidence(
-        id=i, question="q", answer="a", section_path="文档 > 节", content_type="policy",
-        row_category="", category="文档", score=score,
+        id=i, question=question, answer="a", section_path="文档 > 节",
+        content_type="policy", row_category="", category="文档", score=score,
     )
 
 
@@ -26,19 +26,36 @@ def test_empty_recall_refuses_for_every_strategy():
         assert "空" in decision.reason
 
 
-def test_rerank_strategy_refuses_below_threshold():
+def test_rerank_strategy_refuses_low_confidence():
     decision = retrieval_gate(
-        HYBRID_RERANK, [_ev(1, 0.5)], rerank_score=0.04, rerank_min_score=0.10
+        HYBRID_RERANK,
+        [_ev(1, 0.05, "退货政策"), _ev(2, 0.04, "退款时效")],
+        query="猫窝清洗保养", rerank_score=0.05, confidence_min_score=0.30,
     )
     assert decision.refused is True
-    assert "0.04" in decision.reason and "0.10" in decision.reason
+    assert decision.source == SOURCE_RETRIEVAL
+    assert "置信度" in decision.reason
+    assert "0.3000" in decision.reason
 
 
-def test_rerank_strategy_passes_above_threshold():
+def test_rerank_strategy_passes_high_confidence():
     decision = retrieval_gate(
-        HYBRID_RERANK, [_ev(1, 0.5)], rerank_score=0.65, rerank_min_score=0.10
+        HYBRID_RERANK,
+        [_ev(1, 0.9, "退货政策是什么样的"), _ev(2, 0.3, "怎么申请退款")],
+        query="退货政策", rerank_score=0.9, confidence_min_score=0.30,
     )
     assert decision.refused is False
+
+
+def test_confidence_threshold_is_the_knob_not_the_weights():
+    """同样一份证据，抬高阈值就拒、放低就过 —— 校准校的是线，不是权重。"""
+    items = [_ev(1, 0.4, "换货流程怎么走"), _ev(2, 0.2, "退货政策")]
+    assert retrieval_gate(
+        HYBRID_RERANK, items, query="换货", rerank_score=0.4, confidence_min_score=0.9,
+    ).refused is True
+    assert retrieval_gate(
+        HYBRID_RERANK, items, query="换货", rerank_score=0.4, confidence_min_score=0.2,
+    ).refused is False
 
 
 def test_vector_strategy_uses_dense_threshold():

@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import app.rag.pipeline as pipeline
 from app.rag.evidence import Evidence
 
@@ -53,7 +55,10 @@ def test_expanded_pipeline_uses_primary_expansion_query_for_rerank(monkeypatch):
 
     def fake_rerank(candidates, query, *, reranker=None, top_n=None):
         # 模拟真实行为：政策化查询分数高，含商品名/订单号的口语原句分数低。
-        return candidates, (0.8 if query == "核心政策查询" else 0.1), False
+        # 真 `_apply_rerank` 会把精排分写回候选的 score，这里也要写 ——
+        # 置信度闸门看的是候选证据分，不只是单独返回的 rerank_score。
+        score = 0.8 if query == "核心政策查询" else 0.1
+        return [replace(item, score=score) for item in candidates], score, False
 
     def fake_self_check(query, evidence, *, model=None):
         assert query == "订单1001的猫爬架能退吗"

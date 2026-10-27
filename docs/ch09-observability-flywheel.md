@@ -137,6 +137,52 @@ Milvus Lite 是**单进程独占锁**：审核页补答时应用与 CLI 不能�
   算出的值；模型没定价、或 trace 在定价前入库，成本就是 0。本地 `config/model_prices.json` 的 `null`
   不影响账本，但页面上方「模型用量与成本」仍会显示 0 成本。
 
+### 6.2 飞轮评估与趋势
+
+- **跑什么**：`make eval-flywheel` 在 ch04 评估集（240 可答 + 60 应拒）上按线上链路重跑一轮；默认
+  `--mode full`（检索 + 生成 + 裁判，得到 Faithfulness 等端到端指标），`--mode retrieval` 只跑检索四策略。
+  评估结果照旧落 `data/rag_eval/latest.json`，评估页「本轮概况」直接复用同一份。
+- **触发**：`TRIGGER` 环境变量，默认「手动」；定时轮用 `TRIGGER=定时 make eval-flywheel`。触发方式记进每轮，
+  趋势表里能看出这轮是人点的还是定时跑的。定期执行交给系统计划任务（Windows 任务计划 / cron）调用该命令；
+  本仓库不内置调度器，避免和部署环境抢生命周期。
+- **记账**：每轮追加一行到 `data/eval_trends/rounds.jsonl`（`data/*` 已忽略）。字段含评估集名与内容哈希、
+  触发/模式/时间、指标（Faithfulness、答案覆盖、拒答正确率、误拦率、Recall@5、MRR@10；表格展示前五项）、
+  与上轮的对比结果和警告。`finished_at` 取**跑完**时刻，趋势表据此排序。
+- **只有同一评估集才比得动**：对比对象是**同一内容哈希**的上一轮；评估集文件一旦改动（哈希变），
+  本轮标记「不可比」并重置基线，绝不把两套题的数字放在一起算涨跌。页面按 `(评估集, 哈希)` 分行，
+  同一集的多轮写在同一行，从左到右按时间排列（最多最近 6 轮）。
+- **劣化警告**：容差 Faithfulness/答案覆盖 0.03、拒答正确率/Recall@5 0.02；任一项跌破容差，
+  本轮 `comparison.warnings` 写明「脏知识可能已进库」，页面顶部直接红字提示 —— 飞轮持续写库，
+  脏知识最先拉低的就是 Faithfulness。
+- **接口**：`GET /rag-eval/api/trends` 返回分组后的轮次与最新警告；页面只读，不触发运行。
+
+### 6.3 置信度阈值校准
+
+- **闸门算法**（`app/rag/confidence.py`）：四信号加权 —— Top1 精排分 0.5、有效证据数 0.2、
+  Top1−Top2 分差 0.2、关键条款命中 0.1。有效证据数 = 精排分 ≥ 0.1 的条数，封顶 3 条；
+  分差用绝对差封顶 0.2（比例差会让 0.001 与 0.000 的垃圾证据显示「分差很大」）；关键条款命中 =
+  用户问题与 Top3 证据问题的中文二元组/英文词重合比例。权重是代码常量，**校准只决定线划在哪**。
+- **怎么校**：`make calibrate-confidence`（可 `ARGS="--limit 20"` 冒烟）在 ch04 评估集上逐题跑线上检索
+  （闸门置 0、跳过自评，只为拿到每题的四信号），把可答/应拒两拨的置信度各算分布，再扫
+  0.05 → 0.95、步进 0.01：可答通过率 = 可答且分数 ≥ t 的占比；应拒放行率 = 应拒却被放行的占比；
+  Youden J = 可答通过率 − 应拒放行率，J 最大处为推荐阈值（同 J 取更高、更保守的那条）。
+- **两种错误**：
+  - **误拦**（可答被拦）：库里其实有答案，但这次召回的证据太差（措辞离得远、精排分上不去、
+    置信度低于线），只看证据分不知道「库里有」，于是当成答不上来。被误拦的题走兜底进问题池，
+    归并、审核补进知识库后，下次同样问法就能召回 —— 它是飞轮的燃料，不算纯损失。
+  - **误放**（应拒却放）：库里没有答案、本该拒答的被放进来，用户拿到编造的话。误放率就是
+    「最多能接受多少条该拒的被放进来」，阈值越高压得越低，代价是可答通过率也一起降。
+- **产物与页面**：`data/calibration/latest.json`（分布、扫描曲线、推荐值、在用值下的误拦/误放明细）。
+  评估页「置信度阈值校准」面板展示 4 张卡（推荐/在用/可答通过率/应拒放行率）、分布表、扫描曲线
+  （虚线选定、实线在用）与读图说明；重跑走页面按钮（`POST /rag-eval/api/calibrate`，轮询
+  `GET /rag-eval/api/calibrate/status`）或 `make calibrate-confidence`。产物按运行时的在用阈值计算，
+  若之后改了 `confidence_min_score`，接口会带 `in_use_live`，页面提示「请重跑校准」。
+- **默认值**：`confidence_min_score = 0.30`。2026-10-27 在 ch04 全量 300 题上实跑校准（无精排降级题）：
+  推荐阈值 0.33（Youden J 0.938）；在用 0.30 下可答通过 98.8%（237/240）、应拒放行 5.0%（3/60），
+  误拦 A52/C36/E43，误放 D13/D29/D30。0.30 与 0.33 之间没有题目的分数落进来，本轮两线指标完全相同，
+  故保留 0.30；若要求误放归零，线要抬到 0.66，可答通过率只剩 84.2% —— 这是业务上要拍的代价。
+  精排降级（`rerank_score is None`）仍不套置信度闸门（Ruling R1：降级等价于纯 hybrid）。
+
 ## 7. Langfuse 启动/关闭与版本配对
 
 - 启动：`make langfuse-up`（先 `langfuse-env` 补齐缺失本地密钥，再 `docker compose -f docker-compose.langfuse.yml up -d`，
@@ -167,7 +213,7 @@ Milvus Lite 是**单进程独占锁**：审核页补答时应用与 CLI 不能�
 
 ```bash
 uv run pytest tests/test_ch09_live.py -q     # 默认 skip，预期 1 skipped
-uv run pytest -q                             # 全量回归，预期 872 passed / 7 skipped
+uv run pytest -q                             # 全量回归，预期 927 passed / 7 skipped
 uv run python -m compileall app tests eval   # 语法编译全通过
 make test                                    # 与 uv run pytest -q 同一套件
 ```
@@ -191,6 +237,9 @@ make merge                    # 确认后真正回填指纹并归并
 make langfuse-up              # 起观测栈
 make dev                      # 起应用
 make cost-report              # 意图成本账产物（也可在观测页点「在页面上重跑」）
+make eval-flywheel            # 飞轮第一轮（TRIGGER 默认手动，默认 --mode full）
+TRIGGER=定时 make eval-flywheel  # 定时轮，跑完自动与同评估集上一轮对比
+make calibrate-confidence     # 置信度阈值校准产物（ARGS="--limit 20" 冒烟）
 ```
 
 ### 9.1 A/B/C/D 页面清单（spec §14.2）与批处理门禁（spec §14.3）

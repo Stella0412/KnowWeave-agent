@@ -1,5 +1,9 @@
 # 宿主 UV_CACHE_DIR 值带引号会让 uv 失败；项目内统一修正
 export UV_CACHE_DIR := D:/caches/uv
+# C 盘紧张：进程临时文件（jieba 词典缓存、pytest tmp 等）也落 D 盘
+export TEMP := D:/caches/tmp
+export TMP := D:/caches/tmp
+export TMPDIR := D:/caches/tmp
 PYML := uv run --group ml python
 PY := uv run python
 # Windows 下 PATH 里的 make 可能是 Cygwin 版，无法执行 Docker Desktop 的 sh shim；
@@ -10,7 +14,7 @@ else
 DOCKER ?= docker
 endif
 
-.PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live cost-report test topic-audit topic-train topic-tune topic-eval topic-export topic-serve topic-classify topic-smoke
+.PHONY: dev langfuse-env langfuse-up langfuse-wait langfuse-down langfuse-logs langfuse-status merge gap-review vectorize eval-merge eval-live eval-flywheel cost-report calibrate-confidence test topic-audit topic-train topic-tune topic-eval topic-export topic-serve topic-classify topic-smoke
 
 dev:
 	$(PY) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
@@ -57,6 +61,14 @@ eval-live:
 # 意图成本账：产物落 data/cost_report/latest.json，页面只读产物
 cost-report:
 	$(PY) -m app.jobs.cost_report $(if $(ARGS),$(ARGS),--days 7)
+
+# 飞轮评估：重跑 ch04 并记入 data/eval_trends/rounds.jsonl（TRIGGER=定时 标记定时轮）
+eval-flywheel:
+	$(PY) eval/flywheel_eval.py $(ARGS)
+
+# 置信度阈值校准：ch04 评估集实跑，产物落 data/calibration/latest.json
+calibrate-confidence:
+	$(PY) eval/confidence_calibration.py $(ARGS)
 
 test:
 	$(PY) -m pytest -q
