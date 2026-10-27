@@ -63,7 +63,8 @@ def build_observability(settings, counter=None):
         os.environ.setdefault("LANGFUSE_BASE_URL", host)
         try:
             from langfuse import Langfuse, get_client
-            from langfuse.langchain import CallbackHandler
+
+            from app.observability.intent_tags import IntentTaggingCallbackHandler
 
             client = Langfuse(
                 public_key=public_key, secret_key=secret_key, host=host,
@@ -71,7 +72,7 @@ def build_observability(settings, counter=None):
                 mask_otel_spans=mask_otel_spans,
             )
             _client = client
-            langfuse_callback = CallbackHandler()
+            langfuse_callback = IntentTaggingCallbackHandler()
             trace_id_provider = lambda: get_client().get_current_trace_id()
         except Exception:
             logger.warning("Langfuse 初始化失败，降级为本地指标", exc_info=True)
