@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.core.llm import build_structured_model
-from app.db.models import FlywheelSuggestion, KnowledgeChunk, LowConfidenceQuestion, LowConfidenceStatus
+from app.db.models import FlywheelSuggestion, FlywheelSuggestionEvidence, KnowledgeChunk, LowConfidenceQuestion, LowConfidenceStatus
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,10 @@ class SuggestionPipeline:
                     return existing
                 row = FlywheelSuggestion(question_id=question_id, **result.model_dump())
                 session.add(row)
+                session.add(FlywheelSuggestionEvidence(
+                    question_id=question_id, knowledge_candidates=evidence,
+                    retrieval_snapshot=snapshot,
+                ))
                 await session.commit()
                 return row
 

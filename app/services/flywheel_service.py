@@ -17,6 +17,8 @@ from app.config import settings as default_settings
 from app.core.embeddings import embed_texts
 from app.db.models import (
     FlywheelSuggestion,
+    FlywheelSuggestionEvidence,
+    FlywheelReviewDecision,
     KnowledgeChunk,
     LowConfidenceQuestion,
     LowConfidenceStatus,
@@ -44,6 +46,22 @@ def question_fingerprint(text: str) -> str:
 
 def qa_fingerprint(question: str, answer: str) -> str:
     return question_fingerprint(f"{question}\n{answer}")
+
+
+def knowledge_signature(chunk) -> str:
+    import json
+    return hashlib.sha256(json.dumps(
+        [chunk.questions, chunk.answer, chunk.category], ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def knowledge_snapshot(chunk) -> dict:
+    return {
+        "id": chunk.id, "question": chunk.questions, "answer": chunk.answer,
+        "category": chunk.category, "section_path": chunk.section_path,
+        "signature": knowledge_signature(chunk),
+        "updated_at": chunk.updated_at.isoformat() if chunk.updated_at else None,
+    }
 
 
 class ReviewRejected(Exception):
@@ -467,6 +485,11 @@ class FlywheelService:
         async with self._session_factory() as session:
             root = await self._resolve_cluster(session, cluster_id)
             suggestion = await session.get(FlywheelSuggestion, root.id)
+            saved_evidence = await session.get(FlywheelSuggestionEvidence, root.id)
+            matched = (
+                await session.get(KnowledgeChunk, suggestion.matched_chunk_id)
+                if suggestion and suggestion.matched_chunk_id is not None else None
+            )
             repo = LowConfidenceRepository(session)
             children = await repo.list_children(root.id)
             rows = [root, *children]
@@ -494,6 +517,11 @@ class FlywheelService:
                 "redirected_from": cluster_id if cluster_id != root.id else None,
                 "raw_question": root.raw_question,
                 **self._suggestion_fields(suggestion),
+                "matched_knowledge": knowledge_snapshot(matched) if matched else None,
+                "suggestion_evidence": None if saved_evidence is None else {
+                    "knowledge_candidates": saved_evidence.knowledge_candidates,
+                    "retrieval_snapshot": saved_evidence.retrieval_snapshot,
+                },
                 "status": self._status_value(root.status),
                 "duplicate_count": int(root.duplicate_count or 0),
                 "resolution": root.resolution,
@@ -553,7 +581,18 @@ class FlywheelService:
             "source_counts": source_counts,
         }
 
-    async def submit_answer(self, cluster_id: int, *, question, answer, category="人工补充") -> dict:
+    async def submit_answer(self, cluster_id: int, *, question, answer, category="人工补充",
+                            action="new", target_chunk_id=None, expected_signature=None) -> dict:
+        if action not in {"new", "reuse", "update"}:
+            raise ReviewRejected(422, "未知入库方式")
+        if action in {"reuse", "update"}:
+            return await self._review_existing(
+                cluster_id, action=action, target_chunk_id=target_chunk_id,
+                expected_signature=expected_signature, question=question,
+                answer=answer, category=category,
+            )
+        if target_chunk_id is not None:
+            raise ReviewRejected(422, "新增知识不能指定已有知识编号")
         async with self._cluster_lock(cluster_id):
             async with self._session_factory() as session:
                 root = await self._resolve_cluster(session, cluster_id, for_update=True)
@@ -572,8 +611,8 @@ class FlywheelService:
                     root.status = LowConfidenceStatus.CLOSED
                     root.knowledge_chunk_id = chunk_id
                     root.resolution = f"复用已有知识，chunk #{chunk_id}"
-                    await session.commit()
                     reused_flag = True
+                    selected_chunk = await session.get(KnowledgeChunk, chunk_id)
                 else:
                     batch = "flywheel-" + datetime.now().strftime("%Y%m%d")
                     await KnowledgeRepository(session).add_staging(
@@ -588,9 +627,15 @@ class FlywheelService:
                     root.status = LowConfidenceStatus.CLOSED
                     root.knowledge_chunk_id = chunk_id
                     root.resolution = f"人工补充入库，chunk #{chunk_id}"
-                    await session.commit()
                     reused_flag = False
                     reused_status = None
+                    selected_chunk = await session.get(KnowledgeChunk, chunk_id)
+                session.add(FlywheelReviewDecision(
+                    question_id=root.id, action="reuse" if reused_flag else "new",
+                    knowledge_chunk_id=chunk_id, before=None,
+                    after=knowledge_snapshot(selected_chunk),
+                ))
+                await session.commit()
         if reused_status is VectorizeStatus.DONE:
             vectorized = True
         else:
@@ -600,7 +645,61 @@ class FlywheelService:
             "status": "已关闭", "knowledge_chunk_id": chunk_id,
             "reused": reused_flag, "vectorized": vectorized,
             "vectorize_status": vector_status,
+            "action": "reuse" if reused_flag else "new",
         }
+
+    async def _review_existing(self, cluster_id, *, action, target_chunk_id,
+                               expected_signature, question, answer, category):
+        if target_chunk_id is None or not expected_signature:
+            raise ReviewRejected(422, "复用或修订需要关联知识及其版本，请刷新审核详情")
+        if self._vectorize_lock.locked():
+            raise ReviewRejected(409, "知识正在同步，请稍后重试")
+        async with self._cluster_lock(cluster_id), self._vectorize_lock:
+            async with self._session_factory() as session:
+                root = await self._resolve_cluster(session, cluster_id, for_update=True)
+                if root.status is not LowConfidenceStatus.PENDING:
+                    raise ReviewRejected(409, "只有待处理问题可以审核入库")
+                suggestion = await session.get(FlywheelSuggestion, root.id)
+                if not suggestion or suggestion.matched_chunk_id != target_chunk_id:
+                    raise ReviewRejected(409, "关联知识与查重结果不一致，请刷新后重试")
+                chunk = (await session.execute(select(KnowledgeChunk).where(
+                    KnowledgeChunk.id == target_chunk_id).with_for_update())).scalar_one_or_none()
+                if chunk is None:
+                    raise ReviewRejected(409, "关联知识已不存在，请刷新后选择新增知识")
+                if knowledge_signature(chunk) != expected_signature:
+                    raise ReviewRejected(409, "关联知识已被修改，请刷新核对后重新提交")
+                before = knowledge_snapshot(chunk)
+                if action == "update":
+                    q, a = (question or "").strip(), (answer or "").strip()
+                    if not q or not a:
+                        raise ReviewRejected(422, "修订的问题与答案不能为空")
+                    chunk.questions, chunk.answer = q, a
+                    chunk.category = (category or "").strip() or chunk.category
+                    chunk.vectorize_status = VectorizeStatus.PENDING
+                root.status = LowConfidenceStatus.CLOSED
+                root.knowledge_chunk_id = chunk.id
+                root.resolution = f"{'复用' if action == 'reuse' else '修订'}已有知识，知识 #{chunk.id}"
+                await session.flush()
+                await session.refresh(chunk)
+                session.add(FlywheelReviewDecision(
+                    question_id=root.id, action=action, knowledge_chunk_id=chunk.id,
+                    before=before, after=knowledge_snapshot(chunk),
+                ))
+                chunk_id = chunk.id
+                vectorized = chunk.vectorize_status is VectorizeStatus.DONE
+                await session.commit()
+            if not vectorized:
+                try:
+                    await vectorize_pending_rows(
+                        self._session_factory, embed=self._embed,
+                        milvus=self._milvus_factory(), ids=[chunk_id],
+                    )
+                    vectorized = True
+                except Exception:
+                    logger.warning("审核后知识同步失败，保留待同步状态", exc_info=True)
+        return {"status": "已关闭", "knowledge_chunk_id": chunk_id,
+                "action": action, "reused": action == "reuse", "vectorized": vectorized,
+                "vectorize_status": "done" if vectorized else "pending"}
 
     async def _try_vectorize(self, ids: list[int]) -> bool:
         if self._vectorize_lock.locked():

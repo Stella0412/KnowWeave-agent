@@ -321,6 +321,32 @@ class FlywheelSuggestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class FlywheelSuggestionEvidence(Base):
+    """保留实际送入草稿模型的知识候选和检索快照。"""
+
+    __tablename__ = "flywheel_suggestion_evidence"
+    question_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("low_confidence_questions.id"), primary_key=True,
+    )
+    knowledge_candidates: Mapped[list] = mapped_column(JSON, nullable=False)
+    retrieval_snapshot: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class FlywheelReviewDecision(Base):
+    """保存复用/修订/新增决定及修订前后内容。"""
+
+    __tablename__ = "flywheel_review_decisions"
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    question_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("low_confidence_questions.id"), index=True,
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    knowledge_chunk_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    after: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AnswerFeedback(Base):
     """👍/👎 反馈落库：一条助手消息只有一个最终评价，与飞轮/审计表解耦。"""
 

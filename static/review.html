@@ -26,9 +26,16 @@
   .review-gates { margin:16px 20px 0; padding:12px 16px; border:1px dashed #98a2b3; border-radius:8px; background:#fffcf5; line-height:1.9; }
   .review-gates b { color:#92400e; }
   button.approve { color:#067647; background:#ecfdf3; }
-  dialog { width:min(680px,92vw); border:1px solid var(--line); border-radius:12px; padding:24px; }
+  dialog { width:min(1080px,94vw); max-height:90vh; overflow:auto; border:1px solid var(--line); border-radius:12px; padding:24px; }
   dialog::backdrop { background:rgba(16,24,40,.45); }
-  dialog textarea { min-height:210px; }
+  dialog textarea { min-height:240px; }
+  #approval-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,.9fr); gap:20px; }
+  #approval-evidence { background:#f8fafc; padding:14px; border-radius:8px; max-height:65vh; overflow:auto; }
+  .source-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; }
+  .source-card { border-bottom:1px solid var(--line); padding:10px 0; }
+  .source-card summary { cursor:pointer; font-weight:600; }
+  .mode-note { margin:8px 0 14px; color:#667085; }
+  @media (max-width:760px) { #approval-layout { grid-template-columns:1fr; } #approval-evidence { max-height:35vh; } }
   .queue-item .actions { margin-bottom:0; }
   .queue-item .summary { display:block; font-weight:600; margin-bottom:4px; }
   .meta { color:var(--muted); font-size:12px; display:flex; gap:8px; flex-wrap:wrap; }
@@ -84,7 +91,7 @@
 <dialog id="approval-dialog" aria-labelledby="approval-title">
   <h2 id="approval-title">通过并写回知识库</h2>
   <p class="muted">以下为 AI 建议草稿，请核实适用条件、事实与时效，在此基础上核准修订。</p>
-  <div id="approval-form"></div>
+  <div id="approval-layout"><div id="approval-form"></div><aside id="approval-evidence" aria-label="建议答案依据"></aside></div>
   <p id="approval-error" role="alert" class="danger"></p>
 </dialog>
 <script>
@@ -200,6 +207,49 @@ function renderOccurrence(row) {
   return box;
 }
 
+function renderApprovalEvidence(data) {
+  const box = document.getElementById("approval-evidence");
+  box.replaceChildren(node("h3", "", "建议答案依据"));
+  box.append(node("p", "muted", "候选知识和查重结论仅供核对，不代表草稿中每句话都已获证实。请逐项核实事实、条件和时效。"));
+  box.append(node("h4", "", "查重判断与待核实说明"));
+  box.append(node("p", "source-text", data.match_reason || "暂无 AI 查重说明，请人工核实。"));
+  if (data.matched_knowledge) {
+    const knowledge = data.matched_knowledge;
+    box.append(node("h4", "", "关联知识（当前版本） · #" + knowledge.id));
+    box.append(node("p", "source-text", knowledge.question));
+    box.append(node("p", "source-text", knowledge.answer));
+    box.append(node("p", "muted", "来源：" + (knowledge.section_path || knowledge.category || "知识库") +
+      (knowledge.updated_at ? " · 更新于 " + knowledge.updated_at.replace("T", " ").slice(0, 19) : "")));
+  } else {
+    box.append(node("p", "muted", data.matched_chunk_id ? "原匹配知识已不存在，不能复用或修订。" : "未找到明确匹配的知识，草稿需人工确认。"));
+  }
+  const saved = data.suggestion_evidence;
+  if (saved) {
+    box.append(node("h4", "", "生成时参考的知识候选"));
+    const candidates = saved.knowledge_candidates || [];
+    if (!candidates.length) box.append(node("p", "muted", "生成时没有知识候选。"));
+    for (const item of candidates) {
+      const card = node("details", "source-card");
+      card.append(node("summary", "", "知识 #" + item.id + " · " + item.question));
+      card.append(node("p", "source-text", item.answer));
+      box.append(card);
+    }
+  } else {
+    box.append(node("p", "muted", "此草稿生成于依据快照功能启用前，未保存当时的知识候选。上方展示的是关联知识当前版本。"));
+  }
+  box.append(node("h4", "", saved ? "生成时的检索引用原文" : "原问题的历史检索引用"));
+  const citations = saved ? saved.retrieval_snapshot : ((data.occurrences || []).find(row => row.id === data.id) || {}).citations;
+  if (!citations || !citations.length) {
+    box.append(node("p", "muted", citations === null ? "没有检索快照，不能据此证明答案正确。" : "没有可用引用，请核实草稿后再入库。"));
+  }
+  for (const item of citations || []) {
+    const card = node("details", "source-card");
+    card.append(node("summary", "", item.title || item.section_path || ("引用知识 #" + (item.chunk_id || item.n || "未知"))));
+    card.append(node("p", "source-text", item.answer || item.text || item.content || "（无正文）"));
+    box.append(card);
+  }
+}
+
 function renderDetail(data) {
   const panel = document.getElementById("detail");
   panel.replaceChildren();
@@ -237,31 +287,67 @@ function renderDetail(data) {
   approveDetail.disabled = data.status !== "待处理";
   approveDetail.addEventListener("click", () => openApproval(data.id, approveDetail));
   panel.append(approveDetail);
+  renderApprovalEvidence(data);
   const form = node("div", "");
+  const modeLabel = node("label", "", "审核入库方式");
+  modeLabel.htmlFor = "review-action";
+  const mode = node("select", "");
+  mode.id = "review-action";
+  for (const [value, label] of [["reuse", "复用已有知识"], ["update", "修订已有知识"], ["new", "新增知识"]]) {
+    const option = node("option", "", label);
+    option.value = value;
+    option.disabled = value !== "new" && !data.matched_knowledge;
+    mode.append(option);
+  }
+  mode.value = data.matched_knowledge ? "reuse" : "new";
+  const modeNote = node("p", "mode-note");
+  form.append(modeLabel, mode, modeNote);
   const questionRow = node("div", "form-row");
   const question = node("input", "");
   question.id = "answer-question";
   question.placeholder = "标准化问题";
   question.value = data.normalized_question || data.raw_question || "";
-  questionRow.append(question);
+  questionRow.append(node("label", "", "标准化问题"), question);
   form.append(questionRow);
   const answerRow = node("div", "form-row");
   const answer = node("textarea", "");
   answer.id = "answer-text";
   answer.placeholder = "建议生成失败时可重试，或人工补充已核实的答案";
   answer.value = data.suggested_answer || "";
-  answerRow.append(answer);
+  answerRow.append(node("label", "", "核准后的答案"), answer);
   form.append(answerRow);
   const categoryRow = node("div", "form-row");
   const category = node("input", "");
   category.id = "answer-category";
   category.placeholder = "分类（默认 人工补充）";
-  categoryRow.append(category);
+  categoryRow.append(node("label", "", "知识分类"), category);
   form.append(categoryRow);
   const actions = node("div", "actions");
   const submit = node("button", "approve", "确认通过");
   submit.id = "approve-submit";
   submit.addEventListener("click", submitAnswer);
+  const drafts = {};
+  let previousMode = null;
+  function changeMode() {
+    if (previousMode) drafts[previousMode] = { question: question.value, answer: answer.value, category: category.value };
+    const value = mode.value;
+    const matched = data.matched_knowledge;
+    const defaults = value === "new"
+      ? { question: data.normalized_question || data.raw_question || "", answer: data.suggested_answer || "", category: "人工补充" }
+      : { question: matched.question, answer: value === "reuse" ? matched.answer : (data.suggested_answer || matched.answer), category: matched.category };
+    const draft = drafts[value] || defaults;
+    question.value = draft.question;
+    answer.value = draft.answer;
+    category.value = draft.category;
+    for (const input of [question, answer, category]) input.disabled = value === "reuse";
+    modeNote.textContent = value === "reuse" ? "直接关联已有知识，不创建重复内容，也不修改原答案。"
+      : value === "update" ? "将修改右侧关联知识的原问题和答案，影响后续使用该知识的回答；确认后重新同步检索。"
+      : "审核后创建独立知识。若右侧已有同义答案，建议优先复用。";
+    submit.textContent = value === "reuse" ? "确认复用并通过" : value === "update" ? "确认修订并通过" : "确认新增并通过";
+    previousMode = value;
+  }
+  mode.addEventListener("change", changeMode);
+  changeMode();
   actions.append(submit);
   const ignore = node("button", "danger", "驳回");
   ignore.addEventListener("click", () => resolve("ignore"));
@@ -321,7 +407,9 @@ async function submitAnswer() {
   const question = document.getElementById("answer-question").value;
   const answer = document.getElementById("answer-text").value;
   const category = document.getElementById("answer-category").value || "人工补充";
-  if (!answer.trim()) {
+  const action = document.getElementById("review-action").value;
+  const target = state.detail.matched_knowledge;
+  if (action !== "reuse" && !answer.trim()) {
     document.getElementById("approval-error").textContent = "请核准并填写答案后再通过。";
     return;
   }
@@ -331,12 +419,15 @@ async function submitAnswer() {
     const result = await api("/review/api/clusters/" + state.selected + "/answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: question || null, answer: answer, category: category }),
+      body: JSON.stringify({ question: question || null, answer: answer, category: category, action,
+        target_chunk_id: action === "new" ? null : target.id,
+        expected_signature: action === "new" ? null : target.signature }),
     });
     document.getElementById("approval-dialog").close();
-    const tail = result.vectorized ? "已写入 Milvus" : "chunk 仍为 pending，可稍后补向量化";
-    setNotice("补答成功，知识块 #" + result.knowledge_chunk_id + "，" + tail);
-    await loadQueue();
+    const tail = result.vectorized ? "检索已生效" : "待同步检索，可稍后补充同步";
+    const actionName = { reuse: "已复用", update: "已修订", new: "已新增" }[result.action] || "已通过";
+    await loadQueue(true);
+    setNotice(actionName + "知识 #" + result.knowledge_chunk_id + "，" + tail);
     await loadDetail(state.selected);
     await loadMetrics();
   } catch (error) {

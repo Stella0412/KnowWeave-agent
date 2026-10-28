@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.db.models import FlywheelSuggestion, KnowledgeChunk, LowConfidenceQuestion, LowConfidenceStatus
+from app.db.models import FlywheelSuggestion, FlywheelSuggestionEvidence, KnowledgeChunk, LowConfidenceQuestion, LowConfidenceStatus
 from app.services.flywheel_service import FlywheelService
 from app.services.flywheel_suggestions import SuggestionPipeline, SuggestionResult
 
@@ -38,6 +38,10 @@ async def test_one_call_persists_all_three_fields_and_prefills_api(session_facto
     assert detail['status'] == '待处理'
     async with session_factory() as session:
         assert not (await session.execute(select(KnowledgeChunk))).scalars().all()
+        saved = await session.get(FlywheelSuggestionEvidence, root_id)
+        assert saved.knowledge_candidates == []
+        assert saved.retrieval_snapshot is None
+    assert detail['suggestion_evidence']['knowledge_candidates'] == []
 
 
 async def test_rejection_during_generation_cannot_resurrect(session_factory):

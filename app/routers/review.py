@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -18,8 +19,11 @@ def page() -> FileResponse:
 
 class AnswerRequest(BaseModel):
     question: str | None = Field(default=None, max_length=4096)
-    answer: str = Field(min_length=1, max_length=16384)
-    category: str = Field(default="人工补充", max_length=255)
+    answer: str = Field(default="", max_length=16384)
+    category: str | None = Field(default=None, max_length=255)
+    action: Literal["new", "reuse", "update"] = "new"
+    target_chunk_id: int | None = Field(default=None, gt=0)
+    expected_signature: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class ResolutionRequest(BaseModel):
@@ -74,7 +78,9 @@ async def detail(request: Request, cluster_id: int) -> dict:
 async def answer(request: Request, cluster_id: int, req: AnswerRequest):
     try:
         result = await _service(request).submit_answer(
-            cluster_id, question=req.question, answer=req.answer, category=req.category
+            cluster_id, question=req.question, answer=req.answer, category=req.category,
+            action=req.action, target_chunk_id=req.target_chunk_id,
+            expected_signature=req.expected_signature,
         )
     except ReviewRejected as exc:
         return _rejected(exc)
