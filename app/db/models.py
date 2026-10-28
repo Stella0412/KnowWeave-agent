@@ -306,6 +306,21 @@ class LowConfidenceQuestion(Base):
     )
 
 
+class FlywheelSuggestion(Base):
+    """审核草稿独立存储，原始问题与人工处置保持不变。"""
+
+    __tablename__ = "flywheel_suggestions"
+
+    question_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("low_confidence_questions.id"), primary_key=True,
+    )
+    normalized_question: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_answer: Mapped[str] = mapped_column(Text, nullable=False)
+    matched_chunk_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    match_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AnswerFeedback(Base):
     """👍/👎 反馈落库：一条助手消息只有一个最终评价，与飞轮/审计表解耦。"""
 

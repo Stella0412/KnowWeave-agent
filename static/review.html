@@ -11,7 +11,7 @@
   header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); }
   header h1 { font-size:16px; margin:0; }
   header a { color:var(--accent); text-decoration:none; }
-  main { display:grid; grid-template-columns:minmax(320px,420px) 1fr; gap:16px; padding:16px 20px 40px; }
+  main { display:grid; grid-template-columns:minmax(420px,1.1fr) minmax(320px,1fr); gap:16px; padding:16px 20px 40px; }
   section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
   button { font:inherit; border:1px solid var(--line); background:#fff; border-radius:6px; padding:5px 10px; cursor:pointer; }
@@ -19,7 +19,17 @@
   button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   button.danger { color:#b42318; }
   button:disabled { opacity:.55; cursor:default; }
-  .queue-item { width:100%; text-align:left; margin-bottom:8px; padding:10px; }
+  .queue-item { width:100%; margin-bottom:8px; padding:10px; border:1px solid var(--line); border-radius:8px; }
+  .queue-content { display:grid; grid-template-columns:minmax(0,1fr) minmax(100px,.9fr); gap:12px; }
+  .queue-select { text-align:left; min-width:0; border:0; padding:0; }
+  .answer-preview { color:var(--muted); font-size:12px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .review-gates { margin:16px 20px 0; padding:12px 16px; border:1px dashed #98a2b3; border-radius:8px; background:#fffcf5; line-height:1.9; }
+  .review-gates b { color:#92400e; }
+  button.approve { color:#067647; background:#ecfdf3; }
+  dialog { width:min(680px,92vw); border:1px solid var(--line); border-radius:12px; padding:24px; }
+  dialog::backdrop { background:rgba(16,24,40,.45); }
+  dialog textarea { min-height:210px; }
+  .queue-item .actions { margin-bottom:0; }
   .queue-item .summary { display:block; font-weight:600; margin-bottom:4px; }
   .meta { color:var(--muted); font-size:12px; display:flex; gap:8px; flex-wrap:wrap; }
   .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:0 7px; font-size:12px; }
@@ -48,12 +58,19 @@
   <a href="/observability">观测与成本</a>
   <button id="refresh">刷新</button>
 </header>
+<aside class="review-gates" aria-label="审核三道闸">
+  审核前先过三道闸：<b>① 垃圾过滤</b> 乱输入、测试胡打、不当言论 → 驳回；
+  <b>② 时效</b> 活动截止等补了就过期的问题 → 驳回；
+  <b>③ 频次</b> 低频冷门、暂不值得沉淀的问题 → 驳回。
+  剩下的才是缺少的知识，请核准修订 AI 建议答案后通过。
+  <div class="muted">已驳回的问题再次被问到只累加次数，不会自动回到待审；确需恢复时由审核人手动重开。</div>
+</aside>
 <main>
   <section>
     <div class="toolbar" id="tabs">
       <button data-status="待处理" class="active">待处理</button>
       <button data-status="已关闭">已关闭</button>
-      <button data-status="已忽略">已忽略</button>
+      <button data-status="已忽略">已驳回</button>
     </div>
     <div id="queue" class="muted">加载中…</div>
     <div id="queue-total" class="meta"></div>
@@ -64,10 +81,16 @@
     <div id="metrics"></div>
   </section>
 </main>
+<dialog id="approval-dialog" aria-labelledby="approval-title">
+  <h2 id="approval-title">通过并写回知识库</h2>
+  <p class="muted">以下为 AI 建议草稿，请核实适用条件、事实与时效，在此基础上核准修订。</p>
+  <div id="approval-form"></div>
+  <p id="approval-error" role="alert" class="danger"></p>
+</dialog>
 <script>
 "use strict";
 
-const state = { status: "待处理", selected: null, detail: null };
+const state = { status: "待处理", selected: null, detail: null, approving: false };
 
 function node(tag, className, text) {
   const item = document.createElement(tag);
@@ -112,24 +135,39 @@ function renderQueue(items, total) {
     list.append(node("p", "muted", "当前状态下没有待审问题。"));
   }
   for (const item of items) {
-    const button = node("button", "queue-item");
+    const row = node("div", "queue-item");
+    const content = node("div", "queue-content");
+    const button = node("button", "queue-select");
     button.addEventListener("click", () => loadDetail(item.id));
-    button.append(node("span", "summary", item.raw_question || "（空问题）"));
+    button.append(node("span", "summary", item.normalized_question || item.raw_question || "（空问题）"));
+    const preview = node("span", "answer-preview", item.suggested_answer ? "AI 建议：" + item.suggested_answer : "AI 建议生成中，可稍后刷新");
+    preview.title = item.suggested_answer || "";
+    content.append(button, preview);
     const meta = node("span", "meta");
     meta.append(node("span", "badge", "出现 " + item.duplicate_count + " 次"));
-    meta.append(node("span", "", item.status || ""));
+    meta.append(node("span", "", item.status === "已忽略" ? "已驳回" : (item.status || "")));
     const sources = Object.entries(item.sources || {})
       .map(([name, count]) => name + "×" + count).join(" · ");
     if (sources) meta.append(node("span", "", sources));
     if (item.last_seen_at) meta.append(node("span", "", "最近 " + item.last_seen_at.replace("T", " ").slice(0, 16)));
     button.append(meta);
-    list.append(button);
+    row.append(content);
+    if (item.status === "待处理") {
+      const actions = node("div", "actions");
+      const approve = node("button", "approve", "通过");
+      approve.addEventListener("click", () => openApproval(item.id, approve));
+      const reject = node("button", "danger", "驳回");
+      reject.addEventListener("click", async () => { const detail = await loadDetail(item.id); if (detail) await resolve("ignore"); });
+      actions.append(approve, reject);
+      row.append(actions);
+    }
+    list.append(row);
   }
   document.getElementById("queue-total").textContent = "共 " + total + " 个根问题";
 }
 
-async function loadQueue() {
-  setNotice("");
+async function loadQueue(silent = false) {
+  if (!silent) setNotice("");
   try {
     const data = await api("/review/api/queue?status=" + encodeURIComponent(state.status) + "&limit=50&offset=0");
     renderQueue(data.items || [], data.total || 0);
@@ -173,9 +211,10 @@ function renderDetail(data) {
   title.style.fontSize = "16px";
   panel.append(title);
   const meta = node("div", "meta");
-  meta.append(node("span", "badge", data.status || ""));
+  meta.append(node("span", "badge", data.status === "已忽略" ? "已驳回" : (data.status || "")));
   meta.append(node("span", "", "出现 " + data.duplicate_count + " 次"));
   panel.append(meta);
+  if (data.resolution) panel.append(node("p", "muted", "处置说明：" + data.resolution));
 
   const evidence = node("div", "evidence " + (data.evidence_state || "missing"), evidenceText(data.evidence_state));
   panel.append(evidence);
@@ -193,18 +232,24 @@ function renderDetail(data) {
     panel.append(node("p", "", "#" + data.knowledge_chunk.id + " · " + data.knowledge_chunk.vectorize_status + " · 向量 " + (data.knowledge_chunk.vector_id || "未写入")));
   }
 
-  panel.append(node("h3", "", "补答入库"));
+  if (data.match_reason) panel.append(node("p", "muted", "AI 查重：" + data.match_reason + (data.matched_chunk_id ? " · 知识 #" + data.matched_chunk_id : "")));
+  const approveDetail = node("button", "approve", "通过 · 核准修订建议答案");
+  approveDetail.disabled = data.status !== "待处理";
+  approveDetail.addEventListener("click", () => openApproval(data.id, approveDetail));
+  panel.append(approveDetail);
   const form = node("div", "");
   const questionRow = node("div", "form-row");
   const question = node("input", "");
   question.id = "answer-question";
-  question.placeholder = "问题（留空沿用根问题）";
+  question.placeholder = "标准化问题";
+  question.value = data.normalized_question || data.raw_question || "";
   questionRow.append(question);
   form.append(questionRow);
   const answerRow = node("div", "form-row");
   const answer = node("textarea", "");
   answer.id = "answer-text";
-  answer.placeholder = "人工答案：写清适用条件与时效";
+  answer.placeholder = "建议生成失败时可重试，或人工补充已核实的答案";
+  answer.value = data.suggested_answer || "";
   answerRow.append(answer);
   form.append(answerRow);
   const categoryRow = node("div", "form-row");
@@ -214,20 +259,24 @@ function renderDetail(data) {
   categoryRow.append(category);
   form.append(categoryRow);
   const actions = node("div", "actions");
-  const submit = node("button", "", "补答并入库");
+  const submit = node("button", "approve", "确认通过");
+  submit.id = "approve-submit";
   submit.addEventListener("click", submitAnswer);
   actions.append(submit);
   const ignore = node("button", "danger", "驳回");
   ignore.addEventListener("click", () => resolve("ignore"));
-  actions.append(ignore);
+  if (data.status === "待处理") panel.append(ignore);
   const reopen = node("button", "", "重开");
   reopen.addEventListener("click", () => resolve("reopen"));
-  actions.append(reopen);
+  if (data.status !== "待处理") panel.append(reopen);
   const vectorize = node("button", "", "补向量化");
   vectorize.addEventListener("click", vectorizePending);
-  actions.append(vectorize);
+  panel.append(vectorize);
+  const cancel = node("button", "", "取消");
+  cancel.addEventListener("click", () => document.getElementById("approval-dialog").close());
+  actions.append(cancel);
   form.append(actions);
-  panel.append(form);
+  document.getElementById("approval-form").replaceChildren(form);
 }
 
 async function loadDetail(id) {
@@ -237,10 +286,34 @@ async function loadDetail(id) {
     state.selected = data.id;
     state.detail = data;
     renderDetail(data);
+    return data;
   } catch (error) {
     const suffix = error.orphanId ? "（孤儿行 #" + error.orphanId + "）" : "";
     setNotice("详情加载失败：" + error.message + suffix, true);
   }
+}
+
+async function openApproval(id, trigger) {
+  if (state.approving) return;
+  state.approving = true;
+  trigger.disabled = true;
+  try {
+    let data = await loadDetail(id);
+    if (!data || data.status !== "待处理") return;
+    if (!data.suggested_answer) {
+      setNotice("正在生成标准化问题、查重结果与建议答案…");
+      try {
+        await api("/review/api/clusters/" + id + "/suggestion", { method: "POST" });
+        data = await loadDetail(id);
+        if (!data || data.status !== "待处理") return;
+      } catch (error) { setNotice(error.message + "；可人工补充或取消后重试。", true); }
+    }
+    state.selected = data.id;
+    state.detail = data;
+    renderDetail(data);
+    document.getElementById("approval-error").textContent = "";
+    document.getElementById("approval-dialog").showModal();
+  } finally { trigger.disabled = false; state.approving = false; }
 }
 
 async function submitAnswer() {
@@ -248,25 +321,32 @@ async function submitAnswer() {
   const question = document.getElementById("answer-question").value;
   const answer = document.getElementById("answer-text").value;
   const category = document.getElementById("answer-category").value || "人工补充";
+  if (!answer.trim()) {
+    document.getElementById("approval-error").textContent = "请核准并填写答案后再通过。";
+    return;
+  }
+  const submit = document.getElementById("approve-submit");
+  submit.disabled = true;
   try {
     const result = await api("/review/api/clusters/" + state.selected + "/answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: question || null, answer: answer, category: category }),
     });
+    document.getElementById("approval-dialog").close();
     const tail = result.vectorized ? "已写入 Milvus" : "chunk 仍为 pending，可稍后补向量化";
     setNotice("补答成功，知识块 #" + result.knowledge_chunk_id + "，" + tail);
     await loadQueue();
     await loadDetail(state.selected);
     await loadMetrics();
   } catch (error) {
-    setNotice("补答失败：" + error.message, true);
-  }
+    document.getElementById("approval-error").textContent = "入库失败：" + error.message;
+  } finally { submit.disabled = false; }
 }
 
 async function resolve(kind) {
   if (state.selected === null) return;
-  const resolution = window.prompt(kind === "ignore" ? "驳回原因" : "重开原因");
+  const resolution = window.prompt(kind === "ignore" ? "驳回原因（垃圾过滤 / 时效 / 频次 / 其他，请补充说明）" : "重开原因");
   if (!resolution) return;
   const endpoint = kind === "ignore" ? "/ignore" : "/reopen";
   try {
@@ -324,6 +404,9 @@ document.getElementById("refresh").addEventListener("click", () => { loadQueue()
 
 loadQueue();
 loadMetrics();
+setInterval(() => {
+  if (!document.hidden && !state.approving && !document.getElementById("approval-dialog").open) loadQueue(true);
+}, 15000);
 </script>
 </body>
 </html>

@@ -16,6 +16,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from app.config import settings as default_settings
 from app.core.embeddings import embed_texts
 from app.db.models import (
+    FlywheelSuggestion,
     KnowledgeChunk,
     LowConfidenceQuestion,
     LowConfidenceStatus,
@@ -436,6 +437,7 @@ class FlywheelService:
             total = await repo.count_roots(status=status)
             items = []
             for root in roots:
+                suggestion = await session.get(FlywheelSuggestion, root.id)
                 children = await repo.list_children(root.id)
                 rows = [root, *children]
                 sources: dict[str, int] = {}
@@ -447,6 +449,7 @@ class FlywheelService:
                 items.append({
                     "id": root.id,
                     "raw_question": root.raw_question,
+                    **self._suggestion_fields(suggestion),
                     "duplicate_count": int(root.duplicate_count or 0),
                     "status": self._status_value(root.status),
                     "sources": sources,
@@ -463,6 +466,7 @@ class FlywheelService:
     async def cluster_detail(self, cluster_id: int) -> dict:
         async with self._session_factory() as session:
             root = await self._resolve_cluster(session, cluster_id)
+            suggestion = await session.get(FlywheelSuggestion, root.id)
             repo = LowConfidenceRepository(session)
             children = await repo.list_children(root.id)
             rows = [root, *children]
@@ -489,6 +493,7 @@ class FlywheelService:
                 "id": root.id,
                 "redirected_from": cluster_id if cluster_id != root.id else None,
                 "raw_question": root.raw_question,
+                **self._suggestion_fields(suggestion),
                 "status": self._status_value(root.status),
                 "duplicate_count": int(root.duplicate_count or 0),
                 "resolution": root.resolution,
@@ -517,6 +522,15 @@ class FlywheelService:
                     "vector_id": chunk.vector_id,
                 },
             }
+
+    @staticmethod
+    def _suggestion_fields(suggestion):
+        return {
+            "normalized_question": suggestion.normalized_question if suggestion else None,
+            "suggested_answer": suggestion.suggested_answer if suggestion else None,
+            "matched_chunk_id": suggestion.matched_chunk_id if suggestion else None,
+            "match_reason": suggestion.match_reason if suggestion else None,
+        }
 
     async def metrics(self) -> dict:
         async with self._session_factory() as session:

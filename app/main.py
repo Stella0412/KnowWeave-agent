@@ -7,6 +7,8 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 import logging
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,6 +35,7 @@ from app.services.chat_service import build_chat_service
 from app.services.context_manager import log_startup_budget
 from app.services.feedback_service import FeedbackService
 from app.services.flywheel_service import FlywheelService
+from app.services.flywheel_suggestions import SuggestionPipeline
 from app.services.observability_service import ObservabilityService
 from app.services.token_counter import TokenCounter
 from app.tools.audit import write_audit
@@ -115,6 +118,8 @@ async def lifespan(app: FastAPI):
             trace_scope=bundle.trace_scope,
         )
         app.state.flywheel = flywheel
+        app.state.suggestions = SuggestionPipeline(SessionFactory, settings)
+        suggestion_task = asyncio.create_task(app.state.suggestions.run())
         app.state.feedback_service = FeedbackService(
             SessionFactory, app.state.chat_service, flywheel,
         )
@@ -126,6 +131,9 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            suggestion_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await suggestion_task
             await app.state.chat_service.shutdown()
             if bundle.langfuse_client is not None:
                 try:

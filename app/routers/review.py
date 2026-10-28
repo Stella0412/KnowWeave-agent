@@ -85,6 +85,20 @@ async def answer(request: Request, cluster_id: int, req: AnswerRequest):
     )
 
 
+@router.post("/api/clusters/{cluster_id}/suggestion")
+async def suggestion(request: Request, cluster_id: int):
+    pipeline = getattr(request.app.state, "suggestions", None)
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="AI 建议服务未初始化")
+    try:
+        result = await pipeline.generate(cluster_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="AI 建议暂不可用，请稍后重试") from exc
+    if result is None:
+        raise HTTPException(status_code=409, detail="仅待处理的主问题可生成建议")
+    return _service(request)._suggestion_fields(result)
+
+
 @router.post("/api/clusters/{cluster_id}/ignore")
 async def ignore(request: Request, cluster_id: int, req: ResolutionRequest):
     try:
