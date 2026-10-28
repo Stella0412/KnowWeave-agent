@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>知序 · 数据产物</title>
+<title>知序 · 模型与数据</title>
 <style>
   :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
   * { box-sizing: border-box; }
@@ -25,16 +25,16 @@
 </head>
 <body>
 <header>
-  <h1>ch10 · 数据产物</h1>
-  <a href="/acceptance">验收总览</a>
-  <a href="/acceptance/eval">评测详情</a>
-  <a href="/acceptance/errors">错例复核</a>
+  <h1>模型与数据</h1>
+  <a href="/acceptance">主题模型总览</a>
+  <a href="/acceptance/eval">主题模型评测</a>
+  <a href="/acceptance/errors">分类错例复核</a>
 </header>
 <main>
   <div id="error"></div>
   <section>
     <table>
-      <thead><tr><th>产物</th><th>路径</th><th>存在</th><th>大小</th><th>更新时间</th></tr></thead>
+      <thead><tr><th>产物</th><th>文件</th><th>存在</th><th>大小</th><th>更新时间</th></tr></thead>
       <tbody id="rows"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
     </table>
   </section>
@@ -65,7 +65,7 @@ async function load() {
       const tr = document.createElement("tr");
       tr.append(
         text("td", item.name),
-        text("td", item.path, "path"),
+        text("td", (item.path || "").split(/[\\/]/).pop().replace(/^ch\d+[-_]/i, ""), "path"),
         text("td", item.exists ? "✅" : "—", item.exists ? "ok" : "muted"),
         text("td", size(item.bytes)),
         text("td", item.modified_at || "—", "muted"),

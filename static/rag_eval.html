@@ -1397,7 +1397,7 @@ const TREND_METRICS = [
 
 function trendCard() {
   return `<section class="card" id="trend-card">
-    <h2>🧭 飞轮评估趋势 <span class="badge">ch04 评估集</span></h2>
+    <h2>🧭 飞轮评估趋势 <span class="badge">评估集</span></h2>
     <p class="sub">评估流水线定期跑，防飞轮灌进来的脏知识把指标拉下去。同一评估集写在同一行，
       只有同一集的两轮才比得动；Faithfulness 掉出容差会在这里直接警告。</p>
     <div id="trend-panel"></div>
@@ -1461,7 +1461,7 @@ function renderTrendSet(set) {
   }).join("");
   const first = rounds[0] || {};
   return `<tr>
-    <td class="trend-set"><b>${esc(set.eval_set)}</b>
+    <td class="trend-set"><b>${esc(/^ch\d+$/i.test(set.eval_set || "") ? "问答评估集" : set.eval_set)}</b>
       <span>${first.sample_count ?? "—"} 题 · 集 ${esc(set.eval_set_hash)}</span></td>
     ${cells}
   </tr>`;
@@ -1487,7 +1487,7 @@ function trendBody(data) {
 
 function calibrationCard() {
   return `<section class="card" id="cal-card">
-    <h2>🎚️ 置信度阈值校准 <span class="badge">ch04 评估集实跑</span></h2>
+    <h2>🎚️ 置信度阈值校准 <span class="badge">评估集实跑</span></h2>
     <p class="sub">兜底那道闸卡在什么分上，不是拍脑袋定的。拿评估集里可答的和该拒的两拨题
       各算一遍证据置信度，再扫一遍阈值，看哪条线把两拨分得最开。</p>
     <div id="cal-panel"></div>

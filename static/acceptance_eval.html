@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>知序 · 评测详情</title>
+<title>知序 · 主题模型评测</title>
 <style>
   :root { color-scheme: light; --line:#d8dee9; --muted:#667085; --accent:#2563eb; --bad:#b42318; }
   * { box-sizing: border-box; }
@@ -27,10 +27,10 @@
 </head>
 <body>
 <header>
-  <h1>ch10 · 评测详情</h1>
-  <a href="/acceptance">验收总览</a>
-  <a href="/acceptance/data">数据产物</a>
-  <a href="/acceptance/errors">错例复核</a>
+  <h1>主题模型评测</h1>
+  <a href="/acceptance">主题模型总览</a>
+  <a href="/acceptance/data">模型与数据</a>
+  <a href="/acceptance/errors">分类错例复核</a>
 </header>
 <main>
   <div id="error"></div>
@@ -93,7 +93,7 @@ async function load() {
     const data = await response.json();
     const metrics = data.metrics;
     if (!metrics.labels) {
-      document.getElementById("error").textContent = "尚无评测结果：请先生成 data/ch10/eval/metrics.json。";
+      document.getElementById("error").textContent = "尚无评测结果，请先运行模型评测。";
       return;
     }
     document.getElementById("meta").textContent =
@@ -151,7 +151,7 @@ async function load() {
       real.append(tr);
     }
   } catch (error) {
-    document.getElementById("error").textContent = "评测详情加载失败：" + error.message;
+    document.getElementById("error").textContent = "主题模型评测加载失败：" + error.message;
   }
 }
 load();

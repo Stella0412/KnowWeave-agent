@@ -135,6 +135,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="知序 · 智能客服", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def prevent_html_cache(request, call_next):
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
 app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(extract.router)
