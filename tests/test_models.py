@@ -32,6 +32,9 @@ def test_tables_registered():
         "answer_feedback",
         "turn_metrics",
         "topic_classifications",
+        "flywheel_suggestions",
+        "flywheel_suggestion_evidence",
+        "flywheel_review_decisions",
     }
 
 
